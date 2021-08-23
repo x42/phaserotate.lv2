@@ -4,6 +4,7 @@ LV2DIR ?= $(PREFIX)/lib/lv2
 
 OPTIMIZATIONS ?= -msse -msse2 -mfpmath=sse -ffast-math -fomit-frame-pointer -O3 -fno-finite-math-only -DNDEBUG # -fopt-info-vec-missed -fopt-info -fopt-info-loop-vec-all
 CFLAGS ?= $(OPTIMIZATIONS) -Wall
+PKG_CONFIG ?= pkg-config
 STRIP ?= strip
 
 phaserotate_VERSION?=$(shell git describe --tags HEAD 2>/dev/null | sed 's/-g.*$$//;s/^v//' || echo "LV2")
@@ -51,11 +52,11 @@ include git2lv2.mk
 ###############################################################################
 # check for build-dependencies
 
-ifeq ($(shell pkg-config --exists lv2 || echo no), no)
+ifeq ($(shell $(PKG_CONFIG) --exists lv2 || echo no), no)
   $(error "LV2 SDK was not found")
 endif
 
-ifeq ($(shell pkg-config --atleast-version=1.4 lv2 || echo no), no)
+ifeq ($(shell $(PKG_CONFIG) --atleast-version=1.4 lv2 || echo no), no)
   $(error "LV2 SDK needs to be version 1.4 or later")
 endif
 
@@ -63,8 +64,8 @@ ifeq ($(shell $(PKG_CONFIG) --exists fftw3f || echo no), no)
   $(error "fftw3f library was not found")
 endif
 
-override CFLAGS += `pkg-config --cflags lv2 fftw3f` -pthread
-override LOADLIBES += `pkg-config --libs fftw3f` -lm
+override CFLAGS += `$(PKG_CONFIG) --cflags lv2 fftw3f` -pthread
+override LOADLIBES += `$(PKG_CONFIG) --libs fftw3f` -lm
 
 ###############################################################################
 # build target definitions
