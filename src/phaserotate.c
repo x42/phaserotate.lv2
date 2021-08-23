@@ -192,13 +192,13 @@ static void
 run (LV2_Handle instance, uint32_t n_samples)
 {
 	FFTiProc* self  = (FFTiProc*)instance;
-	double    angle = *self->p_angle / 360.0;
+	double    angle = *self->p_angle / -360.0;
 
-	if (angle < 0) {
-		angle = 0;
+	if (angle < -.5) {
+		angle = -.5;
 	}
-	if (angle > 1.0) {
-		angle = 1.0;
+	if (angle > 0.5) {
+		angle = 0.5;
 	}
 
 	const float ca = cos (2.0 * M_PI * angle);
