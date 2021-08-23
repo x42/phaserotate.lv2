@@ -15,6 +15,10 @@
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE // needed for M_PI
+#endif
+
 #define PHASEROTATE_URI "http://gareus.org/oss/lv2/phaserotate"
 
 #include <math.h>

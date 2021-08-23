@@ -64,7 +64,7 @@ ifeq ($(shell $(PKG_CONFIG) --exists fftw3f || echo no), no)
   $(error "fftw3f library was not found")
 endif
 
-override CFLAGS += `$(PKG_CONFIG) --cflags lv2 fftw3f` -pthread
+override CFLAGS += `$(PKG_CONFIG) --cflags lv2 fftw3f` -pthread -std=c99
 override LOADLIBES += `$(PKG_CONFIG) --libs fftw3f` -lm
 
 ###############################################################################
