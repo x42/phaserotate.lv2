@@ -4,3 +4,5 @@
 *.swp
 cscope.*
 tags
+
+/cli/phase-rotate
