@@ -12,22 +12,32 @@ While phase shift uses a **relative** value, a fraction of the wave-length.
 When phase shifting a signal, different components of the signal are delayed
 differently depending on their frequency.
 
-In the following example two sine-waves are phase shifted by 90deg (1/4 of their
-wave-length). Note that the time-delay differs: The sine-wave with the lower
-frequency (top, red) is delayed more compared to the higher pitched
-sine-wave (bottom, violet).
+The following figure shows an oscilloscope display of two sine-waves with different
+frequencies that play concurrently.
 
-![](https://github.com/x42/phaserotate.lv2/blob/master/img/phase-rotated-sines-90deg.png "90deg phase-rotated sine-waves")
+The left images shows a phase shift by 90deg (1/4 of their wave-length).
+Note that the time-delay differs: The sine-wave with the lower frequency (top, red)
+is delayed further compared to the higher pitched sine-wave (bottom, violet).
 
-The interesting aspect is that this does not alter the sound of the signal nor
-the loudness. However changing the phase vs. frequency relationship between lower
-and upper harmonics changes the waveform and can affect where the peak occurs.
+In the right image both sine-waves are delayed by the same time. Note how this
+results in a different phase shift, as both waves differ in their wavelength.
+
+![](https://github.com/x42/phaserotate.lv2/blob/master/img/time-vs-phase-delay.png "Time vs Phase delay")
+
+Due to the periodic nature of the signal, a phase shift of +180 deg is equivalent to
+a shift of -180 deg. The signal is *rotated* around the unit circle on the complex plane.
+
+Phase rotation
+--------------
+
+The interesting aspect is that phase rotation does not alter the sound of the signal
+nor the loudness. However changing the phase vs. frequency relationship between lower
+and upper harmonics changes the waveform and can affect where the digital peak occurs.
 
 For this reason phase rotation is commonly used by radio stations to reduce
-the signal peak and make the signal more symmetrical.
-
-Phase rotation circuits are also used during mastering to increase headroom
-in order to add gain and further compress the signal.
+the signal peak and make the signal more symmetrical. Phase rotation circuits are
+also used during mastering to increase headroom in order to add gain and further
+compress the signal.
 
 CLI
 ---
