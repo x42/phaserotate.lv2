@@ -113,12 +113,12 @@ instantiate (const LV2_Descriptor*     descriptor,
 
 	if (rate < 64000) {
 		/* 44.1 and 48 kHz */
-		self->fftlen = 2048;
+		self->fftlen = 4096;
 	} else if (rate < 128000) {
 		/* 88.2 or 96 kHz. */
-		self->fftlen = 4096;
-	} else {
 		self->fftlen = 8192;
+	} else {
+		self->fftlen = 16384;
 	}
 
 	self->parsiz    = self->fftlen / 2;
