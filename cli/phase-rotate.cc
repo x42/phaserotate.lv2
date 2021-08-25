@@ -150,6 +150,9 @@ public:
 	float
 	peak (int c, int a) const
 	{
+		if (c < 0 || (uint32_t) c > _n_chn) {
+			return peak_all (a);
+		}
 		if (a < 0) {
 			a += 180;
 		}
@@ -392,7 +395,9 @@ usage ()
 
 	/* **** "---------|---------|---------|---------|---------|---------|---------|---------|" */
 	printf ("Options:\n"
+	        "  -f, --fftlen <num>         process-block size, freq. resolution\n"
 	        "  -h, --help                 display this help and exit\n"
+	        "  -l, --link-channels        use downmixed mono peak for analysis\n"
 	        "  -s, --stride <num>         angle distance for analysis\n"
 	        "  -v, --verbose              show processing information\n"
 	        "  -V, --version              print version information and exit\n"
@@ -474,27 +479,30 @@ analyze_file (PhaseRotate& pr, SNDFILE* infile, float* buf, int ang_start, int a
 int
 main (int argc, char** argv)
 {
-	SF_INFO  nfo;
-	SNDFILE* infile     = NULL;
-	SNDFILE* outfile    = NULL;
-	float*   buf        = NULL;
-	int      stride     = 12;
-	int      verbose    = 0;
-	FILE*    verbose_fd = stdout;
-	bool     find_min   = true;
-	int      blksiz     = 8192;
-	int      n_threads  = std::max<int> (1, std::thread::hardware_concurrency ());
+	SF_INFO      nfo;
+	SNDFILE*     infile     = NULL;
+	SNDFILE*     outfile    = NULL;
+	float*       buf        = NULL;
+	int          stride     = 12;
+	int          verbose    = 0;
+	FILE*        verbose_fd = stdout;
+	bool         find_min   = true;
+	bool         link_chn   = false;
+	unsigned int blksiz     = 0;
+	int          n_threads  = std::max<int> (1, std::thread::hardware_concurrency ());
 
 	// TODO pick stride to optimize processor usage
 
-	const char* optstring = "hs:Vv";
+	const char* optstring = "f:hls:Vv";
 
 	/* clang-format off */
 	const struct option longopts[] = {
-		{ "stride",       required_argument, 0, 's' },
-		{ "help",         no_argument,       0, 'h' },
-		{ "version",      no_argument,       0, 'V' },
-		{ "verbose",      no_argument,       0, 'v' },
+		{ "fftlen",        required_argument, 0, 'f' },
+		{ "stride",        required_argument, 0, 's' },
+		{ "help",          no_argument,       0, 'h' },
+		{ "link-channels", no_argument,       0, 'l' },
+		{ "version",       no_argument,       0, 'V' },
+		{ "verbose",       no_argument,       0, 'v' },
 	};
 	/* clang-format on */
 
@@ -502,8 +510,16 @@ main (int argc, char** argv)
 	while (EOF != (c = getopt_long (argc, argv,
 	                                optstring, longopts, (int*)0))) {
 		switch (c) {
+			case 'f':
+				blksiz = atoi (optarg);
+				break;
+
 			case 'h':
 				usage ();
+				break;
+
+			case 'l':
+				link_chn = true;
 				break;
 
 			case 's':
@@ -534,6 +550,11 @@ main (int argc, char** argv)
 
 	if (stride < 1 || stride > 45 || (180 % stride) != 0) {
 		fprintf (stderr, "Error: 180 deg is not evenly dividable by given stride.\n");
+		::exit (EXIT_FAILURE);
+	}
+
+	if (blksiz != 0 && (blksiz < 1024 || blksiz > 32768)) {
+		fprintf (stderr, "Error: fft-len is out of bounds; valid range 1024..32768\n");
 		::exit (EXIT_FAILURE);
 	}
 
@@ -570,6 +591,18 @@ main (int argc, char** argv)
 		fprintf (verbose_fd, "Input File      : %s\n", argv[optind]);
 		fprintf (verbose_fd, "Sample Rate     : %d Hz\n", nfo.samplerate);
 		fprintf (verbose_fd, "Channels        : %d\n", nfo.channels);
+	}
+
+	if (blksiz == 0 || blksiz > 32768) {
+		blksiz = nfo.samplerate / 8;
+	}
+
+	unsigned power_of_two;
+	for (power_of_two = 1; 1U << power_of_two < blksiz; ++power_of_two);
+	blksiz = std::min (32768, std::max (1024, 1 << power_of_two));
+
+	if (verbose > 1) {
+		fprintf (verbose_fd, "Process block-size %d\n", blksiz);
 	}
 
 	buf = (float*)malloc (blksiz * nfo.channels * sizeof (float));
@@ -638,9 +671,10 @@ main (int argc, char** argv)
 				float range;
 
 				for (uint32_t a = 0; a < 180; a += stride) {
-					c_min = std::min (c_min, pr.peak (c, a));
-					c_max = std::max (c_max, pr.peak (c, a));
+					c_min = std::min (c_min, pr.peak (link_chn ? -1 : c, a));
+					c_max = std::max (c_max, pr.peak (link_chn ? -1 : c, a));
 				}
+
 				range = c_max - c_min;
 				if (range == 0) {
 					continue;
@@ -656,7 +690,7 @@ main (int argc, char** argv)
 				}
 
 				for (uint32_t a = 0; a < 180; a += stride) {
-					float p = pr.peak (c, a);
+					float p = pr.peak (link_chn ? -1 : c, a);
 					if (p <= c_min + range) {
 						mins[a].push_back (c);
 						if (verbose > 1) {
@@ -690,7 +724,7 @@ main (int argc, char** argv)
 
 					for (auto& cn : mp.second) {
 						for (int a = ma - stride_2; a < ma + stride_2 + 1; ++a) {
-							float p = pr.peak (cn, a);
+							float p = pr.peak (link_chn ? -1 : cn, a);
 							if (p < p_min[cn]) {
 								p_min[cn]     = p;
 								min_angle[cn] = (a + 180) % 180;
