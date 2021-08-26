@@ -60,14 +60,22 @@ public:
 		, _plan_r2c (0)
 		, _plan_c2r (0)
 	{
+		_window    = (float*)calloc (_fftlen, sizeof (float));
 		_time_data = (float*)fftwf_malloc (_fftlen * sizeof (float));
 		_freq_data = (fftwf_complex*)fftwf_malloc ((_parsiz + 1) * sizeof (fftwf_complex));
 		_plan_r2c  = fftwf_plan_dft_r2c_1d (_fftlen, _time_data, _freq_data, FFTW_ESTIMATE);
 		_plan_c2r  = fftwf_plan_dft_c2r_1d (_fftlen, _freq_data, _time_data, FFTW_ESTIMATE);
+
+		/* create normalized raised cosine window */
+		const double norm = 0.25 / _parsiz;
+		for (uint32_t i = 0; i < _fftlen; ++i) {
+			_window[i] = norm * (1.0 - cos (2.0 * M_PI * i / _fftlen));
+		}
 	}
 
 	~PhaseRotateProc ()
 	{
+		free (_window);
 		fftwf_free (_time_data);
 		fftwf_free (_freq_data);
 		fftwf_destroy_plan (_plan_r2c);
@@ -84,6 +92,7 @@ public:
 	process (float const* in, float* out, float* o_out, float angle)
 	{
 		const uint32_t parsiz = _parsiz;
+		const uint32_t fftlen = _fftlen;
 
 		const float ca = cos (2.0 * M_PI * angle / -360.0);
 		const float sa = sin (2.0 * M_PI * angle / -360.0);
@@ -102,6 +111,12 @@ public:
 
 		fftwf_execute_dft_c2r (_plan_c2r, _freq_data, _time_data);
 
+#pragma GCC ivdep /* do not check for aliasing, buffers do not overlap */
+		/* apply window */
+		for (uint32_t k = 0; k < fftlen; ++k) {
+			_time_data[k] *= _window[k];
+		}
+
 #pragma GCC ivdep
 		for (uint32_t k = 0; k < parsiz; ++k) {
 			out[k] += _time_data[k];
@@ -113,6 +128,7 @@ private:
 	PhaseRotateProc (PhaseRotateProc const&) = delete;
 	uint32_t       _fftlen;
 	uint32_t       _parsiz;
+	float*         _window;
 	float*         _time_data;
 	fftwf_complex* _freq_data;
 	fftwf_plan     _plan_r2c;
@@ -185,7 +201,6 @@ private:
 	float**  _buf_old;
 	float**  _peak;
 	float*** _buf_olp;
-	float*   _window;
 };
 
 PhaseRotate::PhaseRotate (PRPVec& p, uint32_t n_chn)
@@ -194,9 +209,7 @@ PhaseRotate::PhaseRotate (PRPVec& p, uint32_t n_chn)
 	, _n_threads (_proc.size ())
 {
 	uint32_t parsiz = _proc.front ()->parsiz ();
-	uint32_t fftlen = 2 * parsiz;
 
-	_window    = (float*)calloc (fftlen, sizeof (float));
 	_time_data = (float*)calloc (2 * parsiz, sizeof (float));
 	_buf_old   = (float**)calloc (n_chn, sizeof (float*));
 	_buf_olp   = (float***)calloc (n_chn, sizeof (float*));
@@ -214,12 +227,6 @@ PhaseRotate::PhaseRotate (PRPVec& p, uint32_t n_chn)
 		for (uint32_t a = 0; a < 180; ++a) {
 			_buf_olp[c][a] = (float*)calloc (parsiz, sizeof (float*)); // overlap per channel per angle
 		}
-	}
-
-	/* create normalized raised cosine window */
-	const double norm = 0.25 / parsiz;
-	for (uint32_t i = 0; i < fftlen; ++i) {
-		_window[i] = norm * (1.0 - cos (2.0 * M_PI * i / fftlen));
 	}
 }
 
@@ -239,7 +246,6 @@ PhaseRotate::~PhaseRotate ()
 	}
 
 	free (_time_data);
-	free (_window);
 	free (_buf_out);
 	free (_buf_old);
 	free (_buf_olp);
@@ -300,7 +306,6 @@ void
 PhaseRotate::analyze (float const* p_in, int ang_start, int ang_end, int ang_stride, int chn)
 {
 	uint32_t parsiz = _proc.front ()->parsiz ();
-	uint32_t fftlen = 2 * parsiz;
 
 	uint32_t c0 = (chn < 0) ? 0 : chn;
 	uint32_t c1 = (chn < 0) ? _n_chn : chn + 1;
@@ -314,12 +319,6 @@ PhaseRotate::analyze (float const* p_in, int ang_start, int ang_end, int ang_str
 		}
 		/* remember overlap */
 		memcpy (_buf_old[c], &_time_data[parsiz], parsiz * sizeof (float));
-
-#pragma GCC ivdep /* do not check for aliasing, buffers do not overlap */
-		/* apply window */
-		for (uint32_t k = 0; k < fftlen; ++k) {
-			_time_data[k] *= _window[k];
-		}
 
 		int n_threads = _proc.size ();
 		int a         = ang_start;
@@ -356,11 +355,6 @@ PhaseRotate::thr_apply (float const* buf, int c, int a)
 	/* remember overlap */
 	memcpy (_buf_old[c], &tdc[parsiz], parsiz * sizeof (float));
 
-#pragma GCC ivdep /* do not check for aliasing, buffers do not overlap */
-	/* apply window */
-	for (uint32_t k = 0; k < fftlen; ++k) {
-		tdc[k] *= _window[k];
-	}
 	_proc[c]->process (tdc, _buf_out[c], _buf_olp[c][0], a);
 }
 
