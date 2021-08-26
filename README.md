@@ -13,9 +13,10 @@ When phase shifting a signal, different components of the signal are delayed
 differently depending on their frequency.
 
 The following figure shows an oscilloscope display of two sine-waves with different
-frequencies that play concurrently.
+frequencies that play concurrently (green and blue) and respective shifted
+versions of each signal (red, violet).
 
-The left images shows a phase shift by 90deg (1/4 of their wave-length).
+The left images shows a phase shift by 90deg (1/4 wave-length).
 Note that the time-delay differs: The sine-wave with the lower frequency (top, red)
 is delayed further compared to the higher pitched sine-wave (bottom, violet).
 
@@ -36,8 +37,8 @@ and upper harmonics changes the waveform and can affect where the digital peak o
 
 For this reason phase rotation is commonly used by radio stations to reduce
 the signal peak and make the signal more symmetrical. Phase rotation circuits are
-also used during mastering to increase headroom in order to add gain and further
-compress the signal.
+also used during mastering to increase headroom. This allows to increase gain and
+further compress the signal.
 
 CLI
 ---
@@ -60,6 +61,11 @@ make
 
 ln -s `pwd`/build ~/.lv2/phaserotate.lv2
 #sudo make install PREFIX=/usr
+
+cd cli
+make
+#sudo make install PREFIX=/usr
+./phase-rotate --help
 ```
 
 Note to packagers: The Makefile honors `PREFIX` and `DESTDIR` variables as well
