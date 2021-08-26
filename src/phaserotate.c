@@ -259,7 +259,7 @@ run (LV2_Handle instance, uint32_t n_samples)
 			fftwf_execute_dft_r2c (self->plan_r2c, self->time_data, self->freq_data);
 
 			/* rotate phase */
-			for (uint32_t k = 0; k <= parsiz; ++k) {
+			for (uint32_t k = 1; k <= parsiz; ++k) {
 				const float re        = self->freq_data[k][0];
 				self->freq_data[k][0] = (ca * re - sa * self->freq_data[k][1]);
 				self->freq_data[k][1] = (sa * re + ca * self->freq_data[k][1]);

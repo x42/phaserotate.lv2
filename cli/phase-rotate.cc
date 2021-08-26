@@ -103,7 +103,7 @@ public:
 		fftwf_execute_dft_r2c (_plan_r2c, _time_data, _freq_data);
 
 		/* rotate phase */
-		for (uint32_t k = 0; k <= parsiz; ++k) {
+		for (uint32_t k = 1; k <= parsiz; ++k) {
 			const float re   = _freq_data[k][0];
 			_freq_data[k][0] = (ca * re - sa * _freq_data[k][1]);
 			_freq_data[k][1] = (sa * re + ca * _freq_data[k][1]);
