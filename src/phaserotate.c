@@ -256,12 +256,6 @@ run (LV2_Handle instance, uint32_t n_samples)
 				overlap = parsiz;
 			}
 
-#pragma GCC ivdep /* do not check for aliasing, buffers do not overlap */
-			/* apply window */
-			for (uint32_t k = 0; k < fftlen; ++k) {
-				self->time_data[k] *= self->window[k];
-			}
-
 			fftwf_execute_dft_r2c (self->plan_r2c, self->time_data, self->freq_data);
 
 			/* rotate phase */
@@ -272,6 +266,12 @@ run (LV2_Handle instance, uint32_t n_samples)
 			}
 
 			fftwf_execute_dft_c2r (self->plan_c2r, self->freq_data, self->time_data);
+
+#pragma GCC ivdep /* do not check for aliasing, buffers do not overlap */
+			/* apply window */
+			for (uint32_t k = 0; k < fftlen; ++k) {
+				self->time_data[k] *= self->window[k];
+			}
 
 #pragma GCC ivdep
 			for (uint32_t k = 0; k < parsiz; ++k) {
