@@ -40,6 +40,14 @@ the signal peak and make the signal more symmetrical. Phase rotation circuits ar
 also used during mastering to increase headroom. This allows to increase gain and
 further compress the signal.
 
+Caveat
+------
+
+By nature of the process phase-rotation affects transient response. Similar to a
+linear-phase EQ, there is also pre-ringing. Use this effect with caution because
+you are about to become a casualty in the *loudness-war* against quality.
+You have been warned.
+
 CLI
 ---
 
