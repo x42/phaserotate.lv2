@@ -55,27 +55,44 @@ public:
 	PhaseRotateProc (uint32_t blksiz)
 		: _fftlen (blksiz * 2)
 		, _parsiz (blksiz)
+		, _firlen (blksiz / 2)
 		, _time_data (0)
 		, _freq_data (0)
 		, _plan_r2c (0)
 		, _plan_c2r (0)
 	{
-		_window    = (float*)calloc (_fftlen, sizeof (float));
 		_time_data = (float*)fftwf_malloc (_fftlen * sizeof (float));
 		_freq_data = (fftwf_complex*)fftwf_malloc ((_parsiz + 1) * sizeof (fftwf_complex));
+		_ffir_data = (fftwf_complex*)fftwf_malloc ((_parsiz + 1) * sizeof (fftwf_complex));
 		_plan_r2c  = fftwf_plan_dft_r2c_1d (_fftlen, _time_data, _freq_data, FFTW_ESTIMATE);
 		_plan_c2r  = fftwf_plan_dft_c2r_1d (_fftlen, _freq_data, _time_data, FFTW_ESTIMATE);
+		_norm      = 0.5 / _parsiz;
 
-		/* create normalized raised cosine window */
-		const double norm = 0.25 / _parsiz;
-		for (uint32_t i = 0; i < _fftlen; ++i) {
-			_window[i] = norm * (1.0 - cos (2.0 * M_PI * i / _fftlen));
+		/* generate hilbert FIR */
+		float         fir[_fftlen];
+		fftwf_complex freq_fir[_firlen + 1];
+
+		for (uint32_t i = 0; i <= _firlen; ++i) {
+			const float re = i & 1 ? -1 : 1;
+			freq_fir[i][0] = 0;
+			freq_fir[i][1] = re;
 		}
+
+		fftwf_plan plan_fir_c2r = fftwf_plan_dft_c2r_1d (_parsiz, freq_fir, fir, FFTW_ESTIMATE);
+		fftwf_execute_dft_c2r (plan_fir_c2r, freq_fir, fir);
+		fftwf_destroy_plan (plan_fir_c2r);
+
+		const double flen = 1.0 / _parsiz;
+		for (uint32_t i = 0; i < _parsiz; ++i) {
+			fir[i] *= _norm * (1 - cos (2.0 * M_PI * i * flen));
+		}
+
+		memset (fir + _parsiz, 0, _parsiz * sizeof (float));
+		fftwf_execute_dft_r2c (_plan_r2c, fir, _ffir_data);
 	}
 
 	~PhaseRotateProc ()
 	{
-		free (_window);
 		fftwf_free (_time_data);
 		fftwf_free (_freq_data);
 		fftwf_destroy_plan (_plan_r2c);
@@ -92,45 +109,53 @@ public:
 	process (float const* in, float* out, float* o_out, float angle)
 	{
 		const uint32_t parsiz = _parsiz;
-		const uint32_t fftlen = _fftlen;
 
 		const float ca = cos (2.0 * M_PI * angle / -360.0);
 		const float sa = sin (2.0 * M_PI * angle / -360.0);
 
+		/* copy end/overlap of prev. iFFT */
 		memcpy (out, o_out, sizeof (float) * parsiz);
-		memcpy (_time_data, in, sizeof (float) * _fftlen);
+
+		/* fill fft buffer & zero pad */
+		memcpy (_time_data, in + parsiz, sizeof (float) * parsiz);
+		memset (_time_data + parsiz, 0, sizeof (float) * parsiz);
 
 		fftwf_execute_dft_r2c (_plan_r2c, _time_data, _freq_data);
 
-		/* rotate phase */
-		for (uint32_t k = 1; k <= parsiz; ++k) {
-			const float re   = _freq_data[k][0];
-			_freq_data[k][0] = (ca * re - sa * _freq_data[k][1]);
-			_freq_data[k][1] = (sa * re + ca * _freq_data[k][1]);
+		/* FIR convolution, 90deg phase shift */
+		const float          norm     = _norm;
+		const fftwf_complex* freq_fir = _ffir_data;
+#pragma GCC ivdep /* do not check for aliasing, buffers do not overlap */
+		for (uint32_t i = 0; i <= parsiz; ++i) {
+			const float re   = _freq_data[i][0];
+			_freq_data[i][0] = norm * (re * freq_fir[i][0] - _freq_data[i][1] * freq_fir[i][1]);
+			_freq_data[i][1] = norm * (re * freq_fir[i][1] + _freq_data[i][1] * freq_fir[i][0]);
 		}
 
 		fftwf_execute_dft_c2r (_plan_c2r, _freq_data, _time_data);
 
 #pragma GCC ivdep /* do not check for aliasing, buffers do not overlap */
-		/* apply window */
-		for (uint32_t k = 0; k < fftlen; ++k) {
-			_time_data[k] *= _window[k];
-		}
 
-#pragma GCC ivdep
-		for (uint32_t k = 0; k < parsiz; ++k) {
-			out[k] += _time_data[k];
+		for (uint32_t i = 0; i < parsiz; ++i) {
+			out[i] += _time_data[i];
 		}
 		memcpy (o_out, _time_data + parsiz, sizeof (float) * parsiz);
+
+#pragma GCC ivdep
+		for (uint32_t i = 0; i < parsiz; ++i) {
+			out[i] = ca * in[i + _firlen] + sa * out[i];
+		}
 	}
 
 private:
 	PhaseRotateProc (PhaseRotateProc const&) = delete;
 	uint32_t       _fftlen;
 	uint32_t       _parsiz;
-	float*         _window;
+	uint32_t       _firlen;
+	float          _norm;
 	float*         _time_data;
 	fftwf_complex* _freq_data;
+	fftwf_complex* _ffir_data;
 	fftwf_plan     _plan_r2c;
 	fftwf_plan     _plan_c2r;
 };
@@ -148,7 +173,7 @@ public:
 	void reset ();
 	void ensure_thread_buffers ();
 
-	void analyze (float const* in, int ang_start = 0, int ang_end = 180, int ang_stride = 1, int chn = -1);
+	void analyze (float const* in, int ang_start = 0, int ang_end = 180, int ang_stride = 1, int chn = -1, bool start = false);
 	void apply (float* buf, std::vector<int> const& angles);
 
 	int
@@ -166,7 +191,7 @@ public:
 	float
 	peak (int c, int a) const
 	{
-		if (c < 0 || (uint32_t) c > _n_chn) {
+		if (c < 0 || (uint32_t)c > _n_chn) {
 			return peak_all (a);
 		}
 		if (a < 0) {
@@ -190,7 +215,7 @@ public:
 	}
 
 private:
-	void thr_process (int t, int c, int a);
+	void thr_process (int t, int c, int a, bool s);
 	void thr_apply (float const* buf, int c, int a);
 
 	PRPVec&  _proc;
@@ -286,7 +311,7 @@ PhaseRotate::ensure_thread_buffers ()
 }
 
 void
-PhaseRotate::thr_process (int t, int c, int a)
+PhaseRotate::thr_process (int t, int c, int a, bool s)
 {
 	if (a == 0) {
 		_peak[c][a] = calc_peak (_buf_old[c], _proc[t]->parsiz (), _peak[c][a]);
@@ -299,11 +324,18 @@ PhaseRotate::thr_process (int t, int c, int a)
 	a = a % 180;
 
 	_proc[t]->process (_time_data, _buf_out[t], _buf_olp[c][a], a);
-	_peak[c][a] = calc_peak (_buf_out[t], _proc[t]->parsiz (), _peak[c][a]);
+
+	const uint32_t parsiz = _proc[t]->parsiz ();
+	if (s) {
+		const uint32_t lat = parsiz / 2;
+		_peak[c][a] = calc_peak (_buf_out[t] + lat, lat, _peak[c][a]);
+	} else {
+		_peak[c][a] = calc_peak (_buf_out[t], parsiz, _peak[c][a]);
+	}
 }
 
 void
-PhaseRotate::analyze (float const* p_in, int ang_start, int ang_end, int ang_stride, int chn)
+PhaseRotate::analyze (float const* p_in, int ang_start, int ang_end, int ang_stride, int chn, bool start)
 {
 	uint32_t parsiz = _proc.front ()->parsiz ();
 
@@ -325,7 +357,7 @@ PhaseRotate::analyze (float const* p_in, int ang_start, int ang_end, int ang_str
 		while (a <= ang_end) {
 			std::vector<std::thread> threads;
 			for (int t = 0; t < n_threads; ++t) {
-				threads.push_back (std::thread (&PhaseRotate::thr_process, this, t, c, a));
+				threads.push_back (std::thread (&PhaseRotate::thr_process, this, t, c, a, start));
 				a += ang_stride;
 				if (a >= ang_end) {
 					break;
@@ -454,6 +486,7 @@ analyze_file (PhaseRotate& pr, SNDFILE* infile, float* buf, int ang_start, int a
 	int n_channels = pr.n_channels ();
 	int blksiz     = pr.blksiz ();
 
+	bool start = true;
 	do {
 		sf_count_t n = sf_readf_float (infile, buf, blksiz);
 		if (n <= 0) {
@@ -463,11 +496,12 @@ analyze_file (PhaseRotate& pr, SNDFILE* infile, float* buf, int ang_start, int a
 			/* silence pad */
 			memset (&buf[n_channels * n], 0, sizeof (float) * n_channels * (blksiz - n));
 		}
-		pr.analyze (buf, ang_start, ang_end, ang_stride, chn);
+		pr.analyze (buf, ang_start, ang_end, ang_stride, chn, start);
+		start = false;
 	} while (1);
 
 	memset (buf, 0, blksiz * n_channels * sizeof (float));
-	pr.analyze (buf, ang_start, ang_end, ang_stride, chn);
+	pr.analyze (buf, ang_start, ang_end, ang_stride, chn, false);
 }
 
 int
@@ -738,7 +772,7 @@ main (int argc, char** argv)
 
 			/* collect results */
 			float avg_rotate = 0;
-			int   avg_count = 0;
+			int   avg_count  = 0;
 			for (int c = 0; c < nfo.channels; ++c) {
 				if (p_min[c] != std::numeric_limits<float>::infinity ()) {
 					avg_rotate += min_angle[c];
@@ -766,14 +800,14 @@ main (int argc, char** argv)
 			if (!outfile || verbose) {
 				fprintf (verbose_fd, "# Result -- Minimize digital peak\n");
 				for (int c = 0; c < nfo.channels; ++c) {
-				if (p_min[c] == std::numeric_limits<float>::infinity ()) {
+					if (p_min[c] == std::numeric_limits<float>::infinity ()) {
 						fprintf (verbose_fd, "Channel: %2d Phase:   0 deg # cannot find min.\n", c + 1);
-				} else {
+					} else {
 						fprintf (verbose_fd, "Channel: %2d Phase: %3d deg", c + 1, min_angle[c]);
 						if (min_angle[c] != 0) {
 							fprintf (verbose_fd, ", gain: %5.2f dB (att. %4.2f to %4.2f dBFS)",
-						           coeff_to_dB (p_max[c]) - coeff_to_dB (p_min[c]),
-						           coeff_to_dB (p_max[c]), coeff_to_dB (p_min[c]));
+							         coeff_to_dB (p_max[c]) - coeff_to_dB (p_min[c]),
+							         coeff_to_dB (p_max[c]), coeff_to_dB (p_min[c]));
 						}
 						fprintf (verbose_fd, "\n");
 					}
@@ -797,37 +831,37 @@ main (int argc, char** argv)
 				pr.ensure_thread_buffers ();
 				pr.reset ();
 
-				bool     first = true;
-				uint32_t pad   = 0;
+				const uint32_t latency = blksiz / 2;
+
+				uint32_t pad = 0;
+				uint32_t off = latency;
 				do {
 					sf_count_t n = sf_readf_float (infile, buf, blksiz);
 					if (n <= 0) {
 						break;
 					}
 
-					if (n < blksiz) {
+					if (n < latency) {
 						pad = blksiz - n;
-						/* silence pad */
+						/* silence remaining buffer */
 						memset (&buf[n_channels * n], 0, sizeof (float) * n_channels * pad);
+						pad = latency - n;
 						n += pad;
-					} else {
-						pad = 0;
 					}
 
 					pr.apply (buf, angles);
 
-					if (first) {
-						first = false;
-						continue;
-					}
-					if (n != sf_writef_float (outfile, buf, n)) {
+					n -= off;
+
+					if (n != sf_writef_float (outfile, &buf[off], n)) {
 						fprintf (stderr, "Error writing to output file.\n");
-						pad = blksiz;
+						pad = latency;
 						break;
 					}
+					off = 0;
 				} while (1);
 
-				sf_count_t n = blksiz - pad;
+				sf_count_t n = (sf_count_t)latency - pad;
 				if (n > 0) {
 					memset (buf, 0, blksiz * n_channels * sizeof (float));
 					pr.apply (buf, angles);
@@ -837,7 +871,7 @@ main (int argc, char** argv)
 					}
 				}
 				sf_close (outfile);
-			}
+			} // write file
 		} // find min
 	} // scope
 
