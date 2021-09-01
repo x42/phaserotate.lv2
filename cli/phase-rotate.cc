@@ -29,6 +29,9 @@
 #include <fftw3.h>
 #include <sndfile.h>
 
+#define SUBSAMPLE 2
+#define MAXSAMPLE (180 * SUBSAMPLE)
+
 static float
 coeff_to_dB (float coeff)
 {
@@ -195,9 +198,9 @@ public:
 			return peak_all (a);
 		}
 		if (a < 0) {
-			a += 180;
+			a += MAXSAMPLE;
 		}
-		return _peak[c][a % 180];
+		return _peak[c][a % MAXSAMPLE];
 	}
 
 	float
@@ -205,9 +208,9 @@ public:
 	{
 		float p = 0;
 		if (a < 0) {
-			a += 180;
+			a += MAXSAMPLE;
 		}
-		a = a % 180;
+		a = a % MAXSAMPLE;
 		for (uint32_t c = 0; c < _n_chn; ++c) {
 			p = std::max (p, _peak[c][a]);
 		}
@@ -246,10 +249,10 @@ PhaseRotate::PhaseRotate (PRPVec& p, uint32_t n_chn)
 	}
 
 	for (uint32_t c = 0; c < n_chn; ++c) {
-		_buf_old[c] = (float*)calloc (parsiz, sizeof (float)); // input per channel
-		_buf_olp[c] = (float**)calloc (180, sizeof (float*));  // overlap per channel per angle
-		_peak[c]    = (float*)calloc (180, sizeof (float));    // peak per channel per angle
-		for (uint32_t a = 0; a < 180; ++a) {
+		_buf_old[c] = (float*)calloc (parsiz, sizeof (float));      // input per channel
+		_buf_olp[c] = (float**)calloc (MAXSAMPLE, sizeof (float*)); // overlap per channel per angle
+		_peak[c]    = (float*)calloc (MAXSAMPLE, sizeof (float));   // peak per channel per angle
+		for (uint32_t a = 0; a < MAXSAMPLE; ++a) {
 			_buf_olp[c][a] = (float*)calloc (parsiz, sizeof (float*)); // overlap per channel per angle
 		}
 	}
@@ -262,7 +265,7 @@ PhaseRotate::~PhaseRotate ()
 	}
 
 	for (uint32_t c = 0; c < _n_chn; ++c) {
-		for (uint32_t a = 0; a < 180; ++a) {
+		for (uint32_t a = 0; a < MAXSAMPLE; ++a) {
 			free (_buf_olp[c][a]);
 		}
 		free (_buf_old[c]);
@@ -283,7 +286,7 @@ PhaseRotate::reset ()
 	uint32_t parsiz = _proc.front ()->parsiz ();
 	for (uint32_t c = 0; c < _n_chn; ++c) {
 		memset (_buf_old[c], 0, parsiz * sizeof (float));
-		for (uint32_t a = 0; a < 180; ++a) {
+		for (uint32_t a = 0; a < MAXSAMPLE; ++a) {
 			_peak[c][a] = 0;
 			memset (_buf_olp[c][a], 0, parsiz * sizeof (float));
 		}
@@ -319,16 +322,16 @@ PhaseRotate::thr_process (int t, int c, int a, bool s)
 	}
 
 	if (a < 0) {
-		a += 180;
+		a += MAXSAMPLE;
 	}
-	a = a % 180;
+	a = a % MAXSAMPLE;
 
-	_proc[t]->process (_time_data, _buf_out[t], _buf_olp[c][a], a);
+	_proc[t]->process (_time_data, _buf_out[t], _buf_olp[c][a], a / (float)SUBSAMPLE);
 
 	const uint32_t parsiz = _proc[t]->parsiz ();
 	if (s) {
 		const uint32_t lat = parsiz / 2;
-		_peak[c][a] = calc_peak (_buf_out[t] + lat, lat, _peak[c][a]);
+		_peak[c][a]        = calc_peak (_buf_out[t] + lat, lat, _peak[c][a]);
 	} else {
 		_peak[c][a] = calc_peak (_buf_out[t], parsiz, _peak[c][a]);
 	}
@@ -387,7 +390,7 @@ PhaseRotate::thr_apply (float const* buf, int c, int a)
 	/* remember overlap */
 	memcpy (_buf_old[c], &tdc[parsiz], parsiz * sizeof (float));
 
-	_proc[c]->process (tdc, _buf_out[c], _buf_olp[c][0], a);
+	_proc[c]->process (tdc, _buf_out[c], _buf_olp[c][0], a / (float)SUBSAMPLE);
 }
 
 void
@@ -425,7 +428,7 @@ usage ()
 	        "  -f, --fftlen <num>         process-block size, freq. resolution\n"
 	        "  -h, --help                 display this help and exit\n"
 	        "  -l, --link-channels        use downmixed mono peak for analysis\n"
-	        "  -s, --stride <num>         angle distance for analysis\n"
+	        "  -s, --stride <num>         analysis step-size\n"
 	        "  -v, --verbose              show processing information\n"
 	        "  -V, --version              print version information and exit\n"
 	        "\n");
@@ -451,7 +454,6 @@ usage ()
 	        "files to be given. If a single angle is given it is applied to all channels\n"
 	        "of the file. Otherwise one has to specify the same number of phase-angles as\n"
 	        "there are channels in the file.\n"
-	/* **** "---------|---------|---------|---------|---------|---------|---------|---------|" */
 	        "\n");
 
 	printf ("\n"
@@ -521,7 +523,7 @@ main (int argc, char** argv)
 	SNDFILE*     outfile    = NULL;
 	float*       buf        = NULL;
 	char*        angles_opt = NULL;
-	int          stride     = 12;
+	int          stride     = 12 * SUBSAMPLE;
 	int          verbose    = 0;
 	FILE*        verbose_fd = stdout;
 	bool         find_min   = true;
@@ -593,7 +595,7 @@ main (int argc, char** argv)
 		::exit (EXIT_FAILURE);
 	}
 
-	if (stride < 1 || stride > 45 || (180 % stride) != 0) {
+	if (stride < 1 || stride > 45 * SUBSAMPLE || (MAXSAMPLE % stride) != 0) {
 		fprintf (stderr, "Error: 180 deg is not evenly dividable by given stride.\n");
 		::exit (EXIT_FAILURE);
 	}
@@ -616,7 +618,7 @@ main (int argc, char** argv)
 		::exit (EXIT_FAILURE);
 	}
 
-	if (!nfo.seekable) {
+	if (find_min && !nfo.seekable) {
 		fprintf (stderr, "File '%s' is not seekable. ", argv[optind]);
 		::exit (EXIT_FAILURE);
 	}
@@ -644,32 +646,32 @@ main (int argc, char** argv)
 	}
 
 	if (angles_opt) {
-		find_min = false;
+		find_min  = false;
 		char* ang = angles_opt;
 		char* saveptr;
 		while ((ang = strtok_r (angles_opt, ",", &saveptr)) != NULL) {
-			char* ep;
-			long int a = strtol (ang, &ep, 10);
+			char*    ep;
+			double a = strtod (ang, &ep);
 			if (*ep != '\0' || a < -180 || a > 180) {
 				fprintf (stderr, "Error: Invalid angle speficied, value needs to be -180 .. +180.\n");
 				::exit (EXIT_FAILURE);
 			}
 			angles_opt = NULL;
-			angles.push_back (a);
+			angles.push_back (round (a * (float)SUBSAMPLE));
 		}
 		if (angles.size () == 1) {
-			while (angles.size () < (size_t) nfo.channels) {
+			while (angles.size () < (size_t)nfo.channels) {
 				angles.push_back (angles.back ());
 			}
 		}
-		if (angles.size () < (size_t) nfo.channels) {
+		if (angles.size () < (size_t)nfo.channels) {
 			fprintf (stderr, "Error: file has more channels than angles were specified.\n");
 			::exit (EXIT_FAILURE);
 		}
 		if (verbose) {
 			fprintf (verbose_fd, "# Apply phase-shift\n");
 			for (int c = 0; c < nfo.channels; ++c) {
-				fprintf (verbose_fd, "Channel: %2d Phase: %3d deg\n", c + 1, angles[c]);
+				fprintf (verbose_fd, "Channel: %2d Phase: %5.2f deg\n", c + 1, angles[c] / (float)SUBSAMPLE);
 			}
 		}
 	}
@@ -707,7 +709,7 @@ main (int argc, char** argv)
 			fprintf (verbose_fd, "Analyzing using %d process threads, stride = %d\n", n_threads, stride);
 		}
 
-		analyze_file (pr, infile, buf, 0, 180, stride);
+		analyze_file (pr, infile, buf, 0, MAXSAMPLE, stride);
 
 		/*
 		 * Consider writing gnuplot file
@@ -729,8 +731,8 @@ main (int argc, char** argv)
 				printf (" chn-%d", c + 1);
 			}
 			printf ("\n");
-			for (uint32_t a = 0; a < 180; a += stride) {
-				printf ("%d %.4f", a, coeff_to_dB (pr.peak_all (a)));
+			for (uint32_t a = 0; a < MAXSAMPLE; a += stride) {
+				printf ("%.2f %.4f", a / (float)SUBSAMPLE, coeff_to_dB (pr.peak_all (a)));
 				for (int c = 0; c < nfo.channels; ++c) {
 					printf (" %.4f", coeff_to_dB (pr.peak (c, a)));
 				}
@@ -751,7 +753,7 @@ main (int argc, char** argv)
 				float c_max = 0;
 				float range;
 
-				for (uint32_t a = 0; a < 180; a += stride) {
+				for (uint32_t a = 0; a < MAXSAMPLE; a += stride) {
 					c_min = std::min (c_min, pr.peak (link_chn ? -1 : c, a));
 					c_max = std::max (c_max, pr.peak (link_chn ? -1 : c, a));
 				}
@@ -770,12 +772,12 @@ main (int argc, char** argv)
 					p_max[c] = c_max;
 				}
 
-				for (uint32_t a = 0; a < 180; a += stride) {
+				for (uint32_t a = 0; a < MAXSAMPLE; a += stride) {
 					float p = pr.peak (link_chn ? -1 : c, a);
 					if (p <= c_min + range) {
 						mins[a].push_back (c);
 						if (verbose > 1) {
-							fprintf (verbose_fd, "Consider min: %f (< %f) chn: %d @ %d deg\n", p, c_min + range, c, a);
+							fprintf (verbose_fd, "Consider min: %f (< %f) chn: %d @ %.2f deg\n", p, c_min + range, c, a / (float)SUBSAMPLE);
 						}
 					}
 				}
@@ -808,11 +810,13 @@ main (int argc, char** argv)
 							float p = pr.peak (link_chn ? -1 : cn, a);
 							if (p < p_min[cn]) {
 								p_min[cn]     = p;
-								min_angle[cn] = (a + 180) % 180;
+								min_angle[cn] = (a + MAXSAMPLE) % MAXSAMPLE;
 							}
 
 							if (verbose > 1) {
-								printf ("%d %.4f", (a + 180) % 180, coeff_to_dB (pr.peak_all (a)));
+								printf ("%.2f %.4f",
+								        ((a + MAXSAMPLE) % MAXSAMPLE) / (float)SUBSAMPLE,
+								        coeff_to_dB (pr.peak_all (a)));
 								for (int c = 0; c < nfo.channels; ++c) {
 									printf (" %.4f", coeff_to_dB (pr.peak (c, a)));
 								}
@@ -833,17 +837,17 @@ main (int argc, char** argv)
 				}
 			}
 			avg_rotate /= avg_count;
-			float avg_dist = 180.f / avg_count;
+			float avg_dist = MAXSAMPLE / (float)avg_count;
 
 			/* minimize channel phase distance */
 			for (int c = 0; c < nfo.channels; ++c) {
 				if (p_min[c] == std::numeric_limits<float>::infinity ()) {
 					angles.push_back (0);
 				} else {
-					if (min_angle[c] > 90 && fabsf (min_angle[c] - avg_rotate) > avg_dist) {
-						min_angle[c] -= 180;
-					} else if (avg_rotate > 90) {
-						min_angle[c] -= 180;
+					if (min_angle[c] > 90 * SUBSAMPLE && fabsf (min_angle[c] - avg_rotate) > avg_dist) {
+						min_angle[c] -= MAXSAMPLE;
+					} else if (avg_rotate > 90 * SUBSAMPLE) {
+						min_angle[c] -= MAXSAMPLE;
 					}
 					angles.push_back (min_angle[c]);
 				}
@@ -856,7 +860,7 @@ main (int argc, char** argv)
 					if (p_min[c] == std::numeric_limits<float>::infinity ()) {
 						fprintf (verbose_fd, "Channel: %2d Phase:   0 deg # cannot find min.\n", c + 1);
 					} else {
-						fprintf (verbose_fd, "Channel: %2d Phase: %3d deg", c + 1, min_angle[c]);
+						fprintf (verbose_fd, "Channel: %2d Phase: %5.2f deg", c + 1, min_angle[c] / (float)SUBSAMPLE);
 						if (min_angle[c] != 0) {
 							fprintf (verbose_fd, ", gain: %5.2f dB (att. %4.2f to %4.2f dBFS)",
 							         coeff_to_dB (p_max[c]) - coeff_to_dB (p_min[c]),
