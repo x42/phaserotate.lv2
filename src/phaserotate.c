@@ -214,6 +214,8 @@ activate (LV2_Handle instance)
 	memset (self->buf_src, 0, self->fftlen * sizeof (float));
 	memset (self->buf_out, 0, self->parsiz * sizeof (float));
 	memset (self->time_data, 0, self->fftlen * sizeof (float));
+	self->overlap = 0;
+	self->offset = 0;
 }
 
 static void
