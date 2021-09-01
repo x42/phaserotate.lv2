@@ -421,6 +421,7 @@ usage ()
 
 	/* **** "---------|---------|---------|---------|---------|---------|---------|---------|" */
 	printf ("Options:\n"
+	        "  -a, --angle <n>[,<n>]*     specify phase angle to apply\n"
 	        "  -f, --fftlen <num>         process-block size, freq. resolution\n"
 	        "  -h, --help                 display this help and exit\n"
 	        "  -l, --link-channels        use downmixed mono peak for analysis\n"
@@ -434,7 +435,7 @@ usage ()
 	        "angle that results in minimal digital-peak, while retaining overall\n"
 	        "sound and loudness.\n"
 	        "\n"
-	        "If both input and output file are given, the analysis results applied and,\n"
+	        "If both input and output file are given, the analysis results applied, and\n"
 	        "a new file with optimized phase is written. Otherwise the analysis results\n"
 	        "are only printed to standard output.\n"
 	        "\n"
@@ -444,12 +445,20 @@ usage ()
 	        "\n"
 	        "Verbose analysis allows to plot the digital peak vs phase-rotation.\n"
 	        "The output is in gnuplot(1) data file format.\n"
+	        "\n"
+	        "If the -a option is specified, no analysis is performed but the given,\n"
+	        "phase-angle(s) are directly applied. This requires both input and output\n"
+	        "files to be given. If a single angle is given it is applied to all channels\n"
+	        "of the file. Otherwise one has to specify the same number of phase-angles as\n"
+	        "there are channels in the file.\n"
+	/* **** "---------|---------|---------|---------|---------|---------|---------|---------|" */
 	        "\n");
 
 	printf ("\n"
 	        "Examples:\n"
-	        "phase-rotate my-music.wav out-file.wav\n\n"
-	        "phase-rotate -vv -s 3 my-music.wav\n\n");
+	        "phase-rotate -l my-music.wav out-file.wav\n\n"
+	        "phase-rotate -vv -s 3 my-music.wav\n\n"
+	        "phase-rotate -a 10,20 in.wav out.wav\n\n");
 
 	printf ("Report bugs to <https://github.com/x42/phaserotate.lv2/issues>\n"
 	        "Website: <https://github.com/x42/phaserotate.lv2/>\n");
@@ -511,6 +520,7 @@ main (int argc, char** argv)
 	SNDFILE*     infile     = NULL;
 	SNDFILE*     outfile    = NULL;
 	float*       buf        = NULL;
+	char*        angles_opt = NULL;
 	int          stride     = 12;
 	int          verbose    = 0;
 	FILE*        verbose_fd = stdout;
@@ -519,12 +529,15 @@ main (int argc, char** argv)
 	unsigned int blksiz     = 0;
 	int          n_threads  = std::max<int> (1, std::thread::hardware_concurrency ());
 
+	std::vector<int> angles;
+
 	// TODO pick stride to optimize processor usage
 
-	const char* optstring = "f:hls:Vv";
+	const char* optstring = "a:f:hls:Vv";
 
 	/* clang-format off */
 	const struct option longopts[] = {
+		{ "angle",         required_argument, 0, 'a' },
 		{ "fftlen",        required_argument, 0, 'f' },
 		{ "stride",        required_argument, 0, 's' },
 		{ "help",          no_argument,       0, 'h' },
@@ -538,6 +551,10 @@ main (int argc, char** argv)
 	while (EOF != (c = getopt_long (argc, argv,
 	                                optstring, longopts, (int*)0))) {
 		switch (c) {
+			case 'a':
+				angles_opt = optarg;
+				break;
+
 			case 'f':
 				blksiz = atoi (optarg);
 				break;
@@ -586,6 +603,11 @@ main (int argc, char** argv)
 		::exit (EXIT_FAILURE);
 	}
 
+	if (angles_opt && optind + 2 > argc) {
+		fprintf (stderr, "Error: -a, --angle option requires an output file to be given.\n");
+		::exit (EXIT_FAILURE);
+	}
+
 	memset (&nfo, 0, sizeof (SF_INFO));
 
 	if ((infile = sf_open (argv[optind], SFM_READ, &nfo)) == 0) {
@@ -619,6 +641,37 @@ main (int argc, char** argv)
 		fprintf (verbose_fd, "Input File      : %s\n", argv[optind]);
 		fprintf (verbose_fd, "Sample Rate     : %d Hz\n", nfo.samplerate);
 		fprintf (verbose_fd, "Channels        : %d\n", nfo.channels);
+	}
+
+	if (angles_opt) {
+		find_min = false;
+		char* ang = angles_opt;
+		char* saveptr;
+		while ((ang = strtok_r (angles_opt, ",", &saveptr)) != NULL) {
+			char* ep;
+			long int a = strtol (ang, &ep, 10);
+			if (*ep != '\0' || a < -180 || a > 180) {
+				fprintf (stderr, "Error: Invalid angle speficied, value needs to be -180 .. +180.\n");
+				::exit (EXIT_FAILURE);
+			}
+			angles_opt = NULL;
+			angles.push_back (a);
+		}
+		if (angles.size () == 1) {
+			while (angles.size () < (size_t) nfo.channels) {
+				angles.push_back (angles.back ());
+			}
+		}
+		if (angles.size () < (size_t) nfo.channels) {
+			fprintf (stderr, "Error: file has more channels than angles were specified.\n");
+			::exit (EXIT_FAILURE);
+		}
+		if (verbose) {
+			fprintf (verbose_fd, "# Apply phase-shift\n");
+			for (int c = 0; c < nfo.channels; ++c) {
+				fprintf (verbose_fd, "Channel: %2d Phase: %3d deg\n", c + 1, angles[c]);
+			}
+		}
 	}
 
 	if (blksiz == 0 || blksiz > 32768) {
@@ -687,7 +740,7 @@ main (int argc, char** argv)
 
 		if (find_min) {
 			std::map<int, std::vector<int>> mins;
-			std::vector<int>                angles;
+			angles.clear ();
 
 			int   min_angle[(int)nfo.channels];
 			float p_min[nfo.channels];
@@ -813,66 +866,67 @@ main (int argc, char** argv)
 					}
 				}
 			}
-
-			if (outfile) {
-				copy_metadata (infile, outfile);
-				int n_channels = nfo.channels;
-
-				if (0 != sf_seek (infile, 0, SEEK_SET)) {
-					fprintf (stderr, "Failed to rewind input file\n");
-					::exit (EXIT_FAILURE);
-				}
-
-				/* Top up threads, process channels in parallel */
-				for (int i = n_threads; i < nfo.channels; ++i) {
-					auto p = std::unique_ptr<PhaseRotateProc> (new PhaseRotateProc (blksiz));
-					prp.push_back (std::move (p));
-				}
-				pr.ensure_thread_buffers ();
-				pr.reset ();
-
-				const uint32_t latency = blksiz / 2;
-
-				uint32_t pad = 0;
-				uint32_t off = latency;
-				do {
-					sf_count_t n = sf_readf_float (infile, buf, blksiz);
-					if (n <= 0) {
-						break;
-					}
-
-					if (n < latency) {
-						pad = blksiz - n;
-						/* silence remaining buffer */
-						memset (&buf[n_channels * n], 0, sizeof (float) * n_channels * pad);
-						pad = latency - n;
-						n += pad;
-					}
-
-					pr.apply (buf, angles);
-
-					n -= off;
-
-					if (n != sf_writef_float (outfile, &buf[off], n)) {
-						fprintf (stderr, "Error writing to output file.\n");
-						pad = latency;
-						break;
-					}
-					off = 0;
-				} while (1);
-
-				sf_count_t n = (sf_count_t)latency - pad;
-				if (n > 0) {
-					memset (buf, 0, blksiz * n_channels * sizeof (float));
-					pr.apply (buf, angles);
-
-					if (n != sf_writef_float (outfile, buf, n)) {
-						fprintf (stderr, "Error writing to output file.\n");
-					}
-				}
-				sf_close (outfile);
-			} // write file
 		} // find min
+
+		if (outfile) {
+			copy_metadata (infile, outfile);
+			int n_channels = nfo.channels;
+
+			if (0 != sf_seek (infile, 0, SEEK_SET)) {
+				fprintf (stderr, "Failed to rewind input file\n");
+				::exit (EXIT_FAILURE);
+			}
+
+			/* Top up threads, process channels in parallel */
+			for (int i = n_threads; i < nfo.channels; ++i) {
+				auto p = std::unique_ptr<PhaseRotateProc> (new PhaseRotateProc (blksiz));
+				prp.push_back (std::move (p));
+			}
+			pr.ensure_thread_buffers ();
+			pr.reset ();
+
+			const uint32_t latency = blksiz / 2;
+
+			uint32_t pad = 0;
+			uint32_t off = latency;
+			do {
+				sf_count_t n = sf_readf_float (infile, buf, blksiz);
+				if (n <= 0) {
+					break;
+				}
+
+				if (n < latency) {
+					pad = blksiz - n;
+					/* silence remaining buffer */
+					memset (&buf[n_channels * n], 0, sizeof (float) * n_channels * pad);
+					pad = latency - n;
+					n += pad;
+				}
+
+				pr.apply (buf, angles);
+
+				n -= off;
+
+				if (n != sf_writef_float (outfile, &buf[off], n)) {
+					fprintf (stderr, "Error writing to output file.\n");
+					pad = latency;
+					break;
+				}
+				off = 0;
+			} while (1);
+
+			sf_count_t n = (sf_count_t)latency - pad;
+			if (n > 0) {
+				memset (buf, 0, blksiz * n_channels * sizeof (float));
+				pr.apply (buf, angles);
+
+				if (n != sf_writef_float (outfile, buf, n)) {
+					fprintf (stderr, "Error writing to output file.\n");
+				}
+			}
+			sf_close (outfile);
+		} // write file
+
 	} // scope
 
 	sf_close (infile);
