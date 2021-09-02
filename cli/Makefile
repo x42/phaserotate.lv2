@@ -3,7 +3,7 @@ bindir = $(PREFIX)/bin
 mandir = $(PREFIX)/share/man/man1
 
 PKG_CONFIG ?= pkg-config
-OPTIMIZATIONS ?= -msse -msse2 -mfpmath=sse -ffast-math -fomit-frame-pointer -O3 -fno-finite-math-only -DNDEBUG # -fopt-info-vec-missed -fopt-info -fopt-info-loop-vec-all
+OPTIMIZATIONS ?= -msse -msse2 -mavx -mfpmath=sse -ffast-math -fomit-frame-pointer -O3 -fno-finite-math-only -DNDEBUG -DHAVE_AVX # -fopt-info-vec-missed -fopt-info -fopt-info-loop-vec-all
 CXXFLAGS ?= $(OPTIMIZATIONS) -Wall -g -std=c++11
 
 VERSION?=$(shell (git describe --tags HEAD 2>/dev/null || echo "v0.4") | sed 's/^v//')
