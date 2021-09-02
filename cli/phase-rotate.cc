@@ -15,6 +15,10 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE // needed for M_PI
+#endif
+
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -32,6 +36,36 @@
 #define SUBSAMPLE 2
 #define MAXSAMPLE (180 * SUBSAMPLE)
 
+class SinCosLut
+{
+public:
+	SinCosLut ()
+	{
+		float mp = 2.f * M_PI / SUBSAMPLE / -360.0;
+		for (int i = 0; i < MAXSAMPLE; ++i) {
+			sincosf (mp * i, &_sin[i], &_cos[i]);
+		}
+	}
+
+	void
+	sincos (int a, float* s, float* c) const
+	{
+#if 0
+		static float mp = 2.f * M_PI / SUBSAMPLE / -360.0;
+		sincosf (a * mp, s, c);
+#else
+		*s = _sin[a];
+		*c = _cos[a];
+#endif
+	}
+
+private:
+	float _sin[MAXSAMPLE];
+	float _cos[MAXSAMPLE];
+};
+
+SinCosLut scl;
+
 static float
 coeff_to_dB (float coeff)
 {
@@ -41,11 +75,24 @@ coeff_to_dB (float coeff)
 	return 20.0f * log10f (coeff);
 }
 
-static float
+static inline float
 calc_peak (float* buf, uint32_t n_samples, float pk)
 {
 	for (uint32_t i = 0; i < n_samples; ++i) {
 		pk = std::max (pk, fabsf (buf[i]));
+	}
+	return pk;
+}
+
+static inline float
+calc_rotated_peak (float const* b0, float const* b1, uint32_t n_samples, float pk, int angle)
+{
+	float sa, ca;
+	scl.sincos (angle, &sa, &ca);
+
+	for (uint32_t i = 0; i < n_samples; ++i) {
+		const float x = ca * b0[i] + sa * b1[i];
+		pk = std::max (pk, fabsf (x));
 	}
 	return pk;
 }
@@ -109,12 +156,9 @@ public:
 	}
 
 	void
-	process (float const* in, float* out, float* o_out, float angle)
+	hilbert (float const* in, float* out, float* o_out)
 	{
 		const uint32_t parsiz = _parsiz;
-
-		const float ca = cos (2.0 * M_PI * angle / -360.0);
-		const float sa = sin (2.0 * M_PI * angle / -360.0);
 
 		/* copy end/overlap of prev. iFFT */
 		memcpy (out, o_out, sizeof (float) * parsiz);
@@ -138,16 +182,30 @@ public:
 		fftwf_execute_dft_c2r (_plan_c2r, _freq_data, _time_data);
 
 #pragma GCC ivdep /* do not check for aliasing, buffers do not overlap */
-
 		for (uint32_t i = 0; i < parsiz; ++i) {
 			out[i] += _time_data[i];
 		}
 		memcpy (o_out, _time_data + parsiz, sizeof (float) * parsiz);
+	}
 
+	void
+	rotate (float const* in, float* out, int angle)
+	{
+		float          sa, ca;
+		const uint32_t parsiz = _parsiz;
+		scl.sincos (angle, &sa, &ca);
+		const float* fin = &in[_firlen];
 #pragma GCC ivdep
 		for (uint32_t i = 0; i < parsiz; ++i) {
-			out[i] = ca * in[i + _firlen] + sa * out[i];
+			out[i] = ca * fin[i] + sa * out[i];
 		}
+	}
+
+	void
+	process (float const* in, float* out, float* o_out, int angle)
+	{
+		hilbert (in, out, o_out);
+		rotate (in, out, angle);
 	}
 
 private:
@@ -218,17 +276,16 @@ public:
 	}
 
 private:
-	void thr_process (int t, int c, int a, bool s);
+	void thr_process (float const* in, int ang_start = 0, int ang_end = 180, int ang_stride = 1, int chn = -1, bool start = false);
 	void thr_apply (float const* buf, int c, int a);
 
 	PRPVec&  _proc;
 	uint32_t _n_chn;
 	size_t   _n_threads;
-	float*   _time_data;
 	float**  _buf_out;
 	float**  _buf_old;
+	float**  _buf_olp;
 	float**  _peak;
-	float*** _buf_olp;
 };
 
 PhaseRotate::PhaseRotate (PRPVec& p, uint32_t n_chn)
@@ -238,10 +295,9 @@ PhaseRotate::PhaseRotate (PRPVec& p, uint32_t n_chn)
 {
 	uint32_t parsiz = _proc.front ()->parsiz ();
 
-	_time_data = (float*)calloc (2 * parsiz, sizeof (float));
-	_buf_old   = (float**)calloc (n_chn, sizeof (float*));
-	_buf_olp   = (float***)calloc (n_chn, sizeof (float*));
-	_peak      = (float**)calloc (n_chn, sizeof (float*));
+	_buf_old = (float**)calloc (n_chn, sizeof (float*));
+	_buf_olp = (float**)calloc (n_chn, sizeof (float*));
+	_peak    = (float**)calloc (n_chn, sizeof (float*));
 
 	_buf_out = (float**)calloc (_n_threads, sizeof (float*));
 	for (size_t t = 0; t < _n_threads; ++t) {
@@ -249,12 +305,9 @@ PhaseRotate::PhaseRotate (PRPVec& p, uint32_t n_chn)
 	}
 
 	for (uint32_t c = 0; c < n_chn; ++c) {
-		_buf_old[c] = (float*)calloc (parsiz, sizeof (float));      // input per channel
-		_buf_olp[c] = (float**)calloc (MAXSAMPLE, sizeof (float*)); // overlap per channel per angle
-		_peak[c]    = (float*)calloc (MAXSAMPLE, sizeof (float));   // peak per channel per angle
-		for (uint32_t a = 0; a < MAXSAMPLE; ++a) {
-			_buf_olp[c][a] = (float*)calloc (parsiz, sizeof (float*)); // overlap per channel per angle
-		}
+		_buf_old[c] = (float*)calloc (parsiz, sizeof (float));    // input per channel
+		_buf_olp[c] = (float*)calloc (parsiz, sizeof (float));    // overlap per channel
+		_peak[c]    = (float*)calloc (MAXSAMPLE, sizeof (float)); // peak per channel per angle
 	}
 }
 
@@ -265,15 +318,11 @@ PhaseRotate::~PhaseRotate ()
 	}
 
 	for (uint32_t c = 0; c < _n_chn; ++c) {
-		for (uint32_t a = 0; a < MAXSAMPLE; ++a) {
-			free (_buf_olp[c][a]);
-		}
 		free (_buf_old[c]);
 		free (_buf_olp[c]);
 		free (_peak[c]);
 	}
 
-	free (_time_data);
 	free (_buf_out);
 	free (_buf_old);
 	free (_buf_olp);
@@ -286,9 +335,9 @@ PhaseRotate::reset ()
 	uint32_t parsiz = _proc.front ()->parsiz ();
 	for (uint32_t c = 0; c < _n_chn; ++c) {
 		memset (_buf_old[c], 0, parsiz * sizeof (float));
+		memset (_buf_olp[c], 0, parsiz * sizeof (float));
 		for (uint32_t a = 0; a < MAXSAMPLE; ++a) {
 			_peak[c][a] = 0;
-			memset (_buf_olp[c][a], 0, parsiz * sizeof (float));
 		}
 	}
 }
@@ -314,62 +363,59 @@ PhaseRotate::ensure_thread_buffers ()
 }
 
 void
-PhaseRotate::thr_process (int t, int c, int a, bool s)
+PhaseRotate::thr_process (float const* p_in, int ang_start, int ang_end, int ang_stride, int c, bool start)
 {
-	if (a == 0) {
-		_peak[c][a] = calc_peak (_buf_old[c], _proc[t]->parsiz (), _peak[c][a]);
-		return;
+	uint32_t parsiz = _proc[c]->parsiz ();
+	uint32_t fftlen = 2 * parsiz;
+	uint32_t firlen = parsiz / 2;
+
+	float tdc[fftlen];
+	float hil[parsiz];
+
+	memcpy (tdc, _buf_old[c], parsiz * sizeof (float));
+	for (uint32_t i = 0; i < parsiz; ++i) {
+		tdc[i + parsiz] = p_in[c + i * _n_chn];
 	}
 
-	if (a < 0) {
-		a += MAXSAMPLE;
-	}
-	a = a % MAXSAMPLE;
+	/* remember overlap */
+	memcpy (_buf_old[c], &tdc[parsiz], parsiz * sizeof (float));
 
-	_proc[t]->process (_time_data, _buf_out[t], _buf_olp[c][a], a / (float)SUBSAMPLE);
+	/* apply hilbert FIR */
+	_proc[c]->hilbert (tdc, hil, _buf_olp[c]);
 
-	const uint32_t parsiz = _proc[t]->parsiz ();
-	if (s) {
-		const uint32_t lat = parsiz / 2;
-		_peak[c][a]        = calc_peak (_buf_out[t] + lat, lat, _peak[c][a]);
-	} else {
-		_peak[c][a] = calc_peak (_buf_out[t], parsiz, _peak[c][a]);
+	int a = ang_start;
+	while (a <= ang_end) {
+		/* calc peak / angle */
+		if (a == 0) {
+			_peak[c][a] = calc_peak (_buf_old[c], _proc[c]->parsiz (), _peak[c][a]);
+		} else {
+			memcpy (_buf_out[c], hil, parsiz * sizeof (float));
+
+			if (start) {
+				_peak[c][a] = calc_rotated_peak (&tdc[firlen], &_buf_out[c][firlen], firlen, _peak[c][a], a);
+			} else {
+				_peak[c][a] = calc_rotated_peak (&tdc[firlen], _buf_out[c], parsiz, _peak[c][a], a);
+			}
+		}
+		a += ang_stride;
+		if (a >= ang_end) {
+			break;
+		}
 	}
 }
 
 void
 PhaseRotate::analyze (float const* p_in, int ang_start, int ang_end, int ang_stride, int chn, bool start)
 {
-	uint32_t parsiz = _proc.front ()->parsiz ();
-
 	uint32_t c0 = (chn < 0) ? 0 : chn;
 	uint32_t c1 = (chn < 0) ? _n_chn : chn + 1;
 
+	std::vector<std::thread> threads;
 	for (uint32_t c = c0; c < c1; ++c) {
-		/* copy overlap */
-		memcpy (_time_data, _buf_old[c], parsiz * sizeof (float));
-		/* de-interleave channel */
-		for (uint32_t i = 0; i < parsiz; ++i) {
-			_time_data[i + parsiz] = p_in[c + i * _n_chn];
-		}
-		/* remember overlap */
-		memcpy (_buf_old[c], &_time_data[parsiz], parsiz * sizeof (float));
-
-		int n_threads = _proc.size ();
-		int a         = ang_start;
-		while (a <= ang_end) {
-			std::vector<std::thread> threads;
-			for (int t = 0; t < n_threads; ++t) {
-				threads.push_back (std::thread (&PhaseRotate::thr_process, this, t, c, a, start));
-				a += ang_stride;
-				if (a >= ang_end) {
-					break;
-				}
-			}
-			for (auto& th : threads) {
-				th.join ();
-			}
-		}
+		threads.push_back (std::thread (&PhaseRotate::thr_process, this, p_in, ang_start, ang_end, ang_stride, c, start));
+	}
+	for (auto& th : threads) {
+		th.join ();
 	}
 }
 
@@ -390,7 +436,7 @@ PhaseRotate::thr_apply (float const* buf, int c, int a)
 	/* remember overlap */
 	memcpy (_buf_old[c], &tdc[parsiz], parsiz * sizeof (float));
 
-	_proc[c]->process (tdc, _buf_out[c], _buf_olp[c][0], a / (float)SUBSAMPLE);
+	_proc[c]->process (tdc, _buf_out[c], _buf_olp[c], a);
 }
 
 void
@@ -405,7 +451,7 @@ PhaseRotate::apply (float* buf, std::vector<int> const& angles)
 	}
 
 	/* interleave */
-	uint32_t parsiz = _proc.front ()->parsiz ();
+	const uint32_t parsiz = _proc.front ()->parsiz ();
 	for (uint32_t c = 0; c < _n_chn; ++c) {
 		for (uint32_t i = 0; i < parsiz; ++i) {
 			buf[c + i * _n_chn] = _buf_out[c][i];
@@ -529,7 +575,6 @@ main (int argc, char** argv)
 	bool         find_min   = true;
 	bool         link_chn   = false;
 	unsigned int blksiz     = 0;
-	int          n_threads  = std::max<int> (1, std::thread::hardware_concurrency ());
 
 	std::vector<int> angles;
 
@@ -697,6 +742,7 @@ main (int argc, char** argv)
 
 	{
 		PRPVec prp;
+		int n_threads = nfo.channels;
 
 		for (int i = 0; i < n_threads; ++i) {
 			auto p = std::unique_ptr<PhaseRotateProc> (new PhaseRotateProc (blksiz));
@@ -705,42 +751,42 @@ main (int argc, char** argv)
 
 		PhaseRotate pr (prp, nfo.channels);
 
-		if (verbose > 1) {
-			fprintf (verbose_fd, "Analyzing using %d process threads, stride = %d\n", n_threads, stride);
-		}
-
-		analyze_file (pr, infile, buf, 0, MAXSAMPLE, stride);
-
-		/*
-		 * Consider writing gnuplot file
-		 * ```
-		 * #!/usr/bin/gnuplot -persist
-		 * set terminal qt
-		 * set xlabel "Phase Rotation [deg]"
-		 * set ylabel "Peak [dBFS]"
-		 * set datafile missing "-inf"
-		 * plot '-' u 1:3 t "chn-1", '' u 1:4 t "chn-2"
-		 *  ... # [data, terminate with 'e\n']
-		 * e
-		 * ```
-		 */
-
-		if (verbose > 1) {
-			printf ("# Angle mono-peak");
-			for (int c = 0; c < nfo.channels; ++c) {
-				printf (" chn-%d", c + 1);
+		if (find_min) {
+			if (verbose > 1) {
+				fprintf (verbose_fd, "Analyzing using %d process threads, stride = %d\n", n_threads, stride);
 			}
-			printf ("\n");
-			for (uint32_t a = 0; a < MAXSAMPLE; a += stride) {
-				printf ("%.2f %.4f", a / (float)SUBSAMPLE, coeff_to_dB (pr.peak_all (a)));
+
+			analyze_file (pr, infile, buf, 0, MAXSAMPLE, stride);
+
+			/*
+			 * Consider writing gnuplot file
+			 * ```
+			 * #!/usr/bin/gnuplot -persist
+			 * set terminal qt
+			 * set xlabel "Phase Rotation [deg]"
+			 * set ylabel "Peak [dBFS]"
+			 * set datafile missing "-inf"
+			 * plot '-' u 1:3 t "chn-1", '' u 1:4 t "chn-2"
+			 *  ... # [data, terminate with 'e\n']
+			 * e
+			 * ```
+			 */
+
+			if (verbose > 1) {
+				printf ("# Angle mono-peak");
 				for (int c = 0; c < nfo.channels; ++c) {
-					printf (" %.4f", coeff_to_dB (pr.peak (c, a)));
+					printf (" chn-%d", c + 1);
 				}
 				printf ("\n");
+				for (uint32_t a = 0; a < MAXSAMPLE; a += stride) {
+					printf ("%.2f %.4f", a / (float)SUBSAMPLE, coeff_to_dB (pr.peak_all (a)));
+					for (int c = 0; c < nfo.channels; ++c) {
+						printf (" %.4f", coeff_to_dB (pr.peak (c, a)));
+					}
+					printf ("\n");
+				}
 			}
-		}
 
-		if (find_min) {
 			std::map<int, std::vector<int>> mins;
 			angles.clear ();
 
@@ -876,18 +922,14 @@ main (int argc, char** argv)
 			copy_metadata (infile, outfile);
 			int n_channels = nfo.channels;
 
-			if (0 != sf_seek (infile, 0, SEEK_SET)) {
-				fprintf (stderr, "Failed to rewind input file\n");
-				::exit (EXIT_FAILURE);
-			}
+			if (find_min) {
+				if (0 != sf_seek (infile, 0, SEEK_SET)) {
+					fprintf (stderr, "Failed to rewind input file\n");
+					::exit (EXIT_FAILURE);
+				}
 
-			/* Top up threads, process channels in parallel */
-			for (int i = n_threads; i < nfo.channels; ++i) {
-				auto p = std::unique_ptr<PhaseRotateProc> (new PhaseRotateProc (blksiz));
-				prp.push_back (std::move (p));
+				pr.reset ();
 			}
-			pr.ensure_thread_buffers ();
-			pr.reset ();
 
 			const uint32_t latency = blksiz / 2;
 
