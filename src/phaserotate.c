@@ -43,6 +43,9 @@ typedef struct {
 	float* p_angle;
 	float* p_latency;
 
+	/* Parameter */
+	double angle;
+
 	/* Config */
 	uint32_t fftlen;
 	uint32_t parsiz; // == fftlen / 2
@@ -64,9 +67,18 @@ typedef struct {
 
 } FFTiProc;
 
-/* *****************************************************************************
- * LV2 Plugin
- */
+static void
+sin_cos (float angle, float* s, float* c)
+{
+	static const float twopi = 2 * M_PI;
+#ifdef __APPLE__
+	angle *= twopi;
+	*s = sinf (angle);
+	*c = cosf (angle);
+#else
+	sincosf (angle * twopi, s, c);
+#endif
+}
 
 static void
 cleanup (LV2_Handle instance)
@@ -123,6 +135,7 @@ instantiate (const LV2_Descriptor*     descriptor,
 		self->fftlen = 16384;
 	}
 
+	self->angle     = 0;
 	self->overlap   = 0;
 	self->parsiz    = self->fftlen / 2;
 	self->firlen    = self->parsiz / 2;
@@ -215,24 +228,23 @@ activate (LV2_Handle instance)
 	memset (self->buf_out, 0, self->parsiz * sizeof (float));
 	memset (self->time_data, 0, self->fftlen * sizeof (float));
 	self->overlap = 0;
-	self->offset = 0;
+	self->offset  = 0;
 }
 
 static void
 run (LV2_Handle instance, uint32_t n_samples)
 {
-	FFTiProc* self  = (FFTiProc*)instance;
-	double    angle = *self->p_angle / -360.0;
+	FFTiProc* self = (FFTiProc*)instance;
 
-	if (angle < -.5) {
-		angle = -.5;
-	}
-	if (angle > 0.5) {
-		angle = 0.5;
-	}
+	double angle        = self->angle;
+	double target_angle = *self->p_angle / -360.0;
 
-	const float ca = cos (2.0 * M_PI * angle);
-	const float sa = sin (2.0 * M_PI * angle);
+	if (target_angle < -.5) {
+		target_angle = -.5;
+	}
+	if (target_angle > 0.5) {
+		target_angle = 0.5;
+	}
 
 	/* copy/forward no-inplace buffers */
 	if (self->p_in != self->p_out) {
@@ -306,12 +318,36 @@ run (LV2_Handle instance, uint32_t n_samples)
 				inB = &self->buf_src[parsiz];
 			}
 
-			/* rotate phase */
+			float  ca, sa;
 			float* out = self->buf_out;
+			if (target_angle != angle) {
+				/* interpolate */
+				float da = (target_angle - angle);
+				if (fabs (da) > 0.5) {
+					/* wrap around at +/- 180 */
+					if (da < 0) {
+						da += 1.f;
+					} else {
+						da -= 1.f;
+					}
+				}
+				da /= (float)firlen;
+
+				for (uint32_t i = 0; i < firlen; ++i, ++out) {
+					sin_cos (angle + da * i, &sa, &ca);
+					*out = ca * inA[i] + sa * *out;
+				}
+
+				angle = target_angle;
+				sin_cos (angle, &sa, &ca);
+			} else {
+				sin_cos (angle, &sa, &ca);
 #pragma GCC ivdep
-			for (uint32_t i = 0; i < firlen; ++i, ++out) {
-				*out = ca * inA[i] + sa * *out;
+				for (uint32_t i = 0; i < firlen; ++i, ++out) {
+					*out = ca * inA[i] + sa * *out;
+				}
 			}
+
 #pragma GCC ivdep
 			for (uint32_t i = 0; i < firlen; ++i, ++out) {
 				*out = ca * inB[i] + sa * *out;
@@ -324,6 +360,7 @@ run (LV2_Handle instance, uint32_t n_samples)
 	/* copy back state */
 	self->overlap = overlap;
 	self->offset  = offset;
+	self->angle   = angle;
 
 	/* announce latency */
 	*self->p_latency = parsiz + firlen;
