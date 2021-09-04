@@ -27,7 +27,7 @@ static float
 dsp_compute_peak (const float* buf, uint32_t n_samples, float current)
 {
 	float tmp = 0.0f;
-	vDSP_maxmgv (buf, (vDSP_Stride) 1, &tmp, n_samples);
+	vDSP_maxmgv (buf, (vDSP_Stride)1, &tmp, n_samples);
 	return fmaxf (current, tmp);
 }
 
@@ -40,20 +40,20 @@ dsp_compute_peak (const float* buf, uint32_t n_samples, float current)
 #define _HAVE_DSP_COMPUTE_PEAK
 
 float
-dsp_compute_peak (const float *src, uint32_t nframes, float current)
+dsp_compute_peak (const float* src, uint32_t nframes, float current)
 {
 	float32x4_t vc0;
 
 	// Broadcast single value to all elements of the register
-	vc0 = vdupq_n_f32(current);
+	vc0 = vdupq_n_f32 (current);
 
 	// While pointer is not aligned, process one sample at a time
-	while (!IS_ALIGNED_TO(src, sizeof(float32x4_t)) && (nframes > 0)) {
+	while (!IS_ALIGNED_TO (src, sizeof (float32x4_t)) && (nframes > 0)) {
 		float32x4_t x0;
 
-		x0 = vld1q_dup_f32(src);
-		x0 = vabsq_f32(x0);
-		vc0 = vmaxq_f32(vc0, x0);
+		x0  = vld1q_dup_f32 (src);
+		x0  = vabsq_f32 (x0);
+		vc0 = vmaxq_f32 (vc0, x0);
 
 		++src;
 		--nframes;
@@ -64,14 +64,14 @@ dsp_compute_peak (const float *src, uint32_t nframes, float current)
 		while (nframes >= 8) {
 			float32x4_t x0, x1;
 
-			x0 = vld1q_f32(src + 0);
-			x1 = vld1q_f32(src + 4);
+			x0 = vld1q_f32 (src + 0);
+			x1 = vld1q_f32 (src + 4);
 
-			x0 = vabsq_f32(x0);
-			x1 = vabsq_f32(x1);
+			x0 = vabsq_f32 (x0);
+			x1 = vabsq_f32 (x1);
 
-			vc0 = vmaxq_f32(vc0, x0);
-			vc0 = vmaxq_f32(vc0, x1);
+			vc0 = vmaxq_f32 (vc0, x0);
+			vc0 = vmaxq_f32 (vc0, x1);
 
 			src += 8;
 			nframes -= 8;
@@ -80,10 +80,10 @@ dsp_compute_peak (const float *src, uint32_t nframes, float current)
 		while (nframes >= 4) {
 			float32x4_t x0;
 
-			x0 = vld1q_f32(src);
+			x0 = vld1q_f32 (src);
 
-			x0 = vabsq_f32(x0);
-			vc0 = vmaxq_f32(vc0, x0);
+			x0  = vabsq_f32 (x0);
+			vc0 = vmaxq_f32 (vc0, x0);
 
 			src += 4;
 			nframes -= 4;
@@ -93,26 +93,24 @@ dsp_compute_peak (const float *src, uint32_t nframes, float current)
 			float32x2_t x0;
 			float32x4_t y0;
 
+			x0 = vld1_f32 (src);        // Load two elements
+			x0 = vabs_f32 (x0);         // Compute ABS value
+			y0 = vcombine_f32 (x0, x0); // Combine two vectors
 
-			x0 = vld1_f32(src);        // Load two elements
-			x0 = vabs_f32(x0);         // Compute ABS value
-			y0 = vcombine_f32(x0, x0); // Combine two vectors
-
-			vc0 = vmaxq_f32(vc0, y0);
+			vc0 = vmaxq_f32 (vc0, y0);
 
 			src += 2;
 			nframes -= 2;
 		}
 	} while (0);
 
-
 	// Do remaining samples one frame at a time
 	while (nframes > 0) {
 		float32x4_t x0;
 
-		x0 = vld1q_dup_f32(src);
-		x0 = vabsq_f32(x0);
-		vc0 = vmaxq_f32(vc0, x0);
+		x0  = vld1q_dup_f32 (src);
+		x0  = vabsq_f32 (x0);
+		vc0 = vmaxq_f32 (vc0, x0);
 
 		++src;
 		--nframes;
@@ -120,11 +118,11 @@ dsp_compute_peak (const float *src, uint32_t nframes, float current)
 
 	// Compute the max in register
 	do {
-		float32x2_t vlo = vget_low_f32(vc0);
-		float32x2_t vhi = vget_high_f32(vc0);
-		float32x2_t max0 = vpmax_f32(vlo, vhi);
-		float32x2_t max1 = vpmax_f32(max0, max0); // Max is now at max1[0]
-		current = vget_lane_f32(max1, 0);
+		float32x2_t vlo  = vget_low_f32 (vc0);
+		float32x2_t vhi  = vget_high_f32 (vc0);
+		float32x2_t max0 = vpmax_f32 (vlo, vhi);
+		float32x2_t max1 = vpmax_f32 (max0, max0); // Max is now at max1[0]
+		current          = vget_lane_f32 (max1, 0);
 	} while (0);
 
 	return current;

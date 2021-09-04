@@ -715,7 +715,7 @@ main (int argc, char** argv)
 		char* ang = angles_opt;
 		char* saveptr;
 		while ((ang = strtok_r (angles_opt, ",", &saveptr)) != NULL) {
-			char*    ep;
+			char*  ep;
 			double a = strtod (ang, &ep);
 			if (*ep != '\0' || a < -180 || a > 180) {
 				fprintf (stderr, "Error: Invalid angle speficied, value needs to be -180 .. +180.\n");
@@ -762,7 +762,7 @@ main (int argc, char** argv)
 
 	{
 		PRPVec prp;
-		int n_threads = nfo.channels;
+		int    n_threads = nfo.channels;
 
 		for (int i = 0; i < n_threads; ++i) {
 			auto p = std::unique_ptr<PhaseRotateProc> (new PhaseRotateProc (blksiz));
