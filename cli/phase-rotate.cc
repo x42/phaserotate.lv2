@@ -45,7 +45,12 @@ public:
 	{
 		float mp = 2.f * M_PI / SUBSAMPLE / -360.0;
 		for (int i = 0; i < MAXSAMPLE; ++i) {
+#ifdef __APPLE__
+			_sin[i] = sinf (mp * i);
+			_cos[i] = cosf (mp * i);
+#else
 			sincosf (mp * i, &_sin[i], &_cos[i]);
+#endif
 		}
 	}
 
