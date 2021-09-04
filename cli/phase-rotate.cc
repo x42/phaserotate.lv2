@@ -812,12 +812,15 @@ main (int argc, char** argv)
 
 			int   min_angle[(int)nfo.channels];
 			float p_min[nfo.channels];
-			float p_max[nfo.channels];
+			float r_zro[nfo.channels];
+			float r_min[nfo.channels];
 
 			for (int c = 0; c < nfo.channels; ++c) {
 				float c_min = std::numeric_limits<float>::infinity ();
 				float c_max = 0;
 				float range;
+
+				r_zro[c] = pr.peak (c, 0);
 
 				for (uint32_t a = 0; a < MAXSAMPLE; a += stride) {
 					c_min = std::min (c_min, pr.peak (link_chn ? -1 : c, a));
@@ -826,16 +829,15 @@ main (int argc, char** argv)
 
 				range = c_max - c_min;
 				if (range == 0) {
+					mins[0].push_back (c);
 					continue;
 				}
 				if (stride > 1) {
 					range *= .07;
 					p_min[c] = std::numeric_limits<float>::infinity ();
-					p_max[c] = c_max;
 				} else {
 					range    = 0;
 					p_min[c] = c_min;
-					p_max[c] = c_max;
 				}
 
 				for (uint32_t a = 0; a < MAXSAMPLE; a += stride) {
@@ -853,6 +855,7 @@ main (int argc, char** argv)
 				for (auto& mp : mins) {
 					for (auto& cn : mp.second) {
 						min_angle[cn] = mp.first;
+						r_min[cn]     = pr.peak (cn, mp.first);
 					}
 				}
 			} else {
@@ -874,8 +877,9 @@ main (int argc, char** argv)
 					for (auto& cn : mp.second) {
 						for (int a = ma - stride_2; a < ma + stride_2 + 1; ++a) {
 							float p = pr.peak (link_chn ? -1 : cn, a);
-							if (p < p_min[cn]) {
+							if (p <= p_min[cn]) {
 								p_min[cn]     = p;
+								r_min[cn]     = pr.peak (cn, a);
 								min_angle[cn] = (a + MAXSAMPLE) % MAXSAMPLE;
 							}
 
@@ -929,8 +933,8 @@ main (int argc, char** argv)
 						fprintf (verbose_fd, "Channel: %2d Phase: %5.2f deg", c + 1, min_angle[c] / (float)SUBSAMPLE);
 						if (min_angle[c] != 0) {
 							fprintf (verbose_fd, ", gain: %5.2f dB (att. %4.2f to %4.2f dBFS)",
-							         coeff_to_dB (p_max[c]) - coeff_to_dB (p_min[c]),
-							         coeff_to_dB (p_max[c]), coeff_to_dB (p_min[c]));
+							         coeff_to_dB (r_zro[c]) - coeff_to_dB (r_min[c]),
+							         coeff_to_dB (r_zro[c]), coeff_to_dB (r_min[c]));
 						}
 						fprintf (verbose_fd, "\n");
 					}
