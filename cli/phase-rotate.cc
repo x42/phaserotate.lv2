@@ -401,11 +401,12 @@ PhaseRotate::thr_process (float const* p_in, int ang_start, int ang_end, int ang
 	/* apply hilbert FIR */
 	_proc[c]->hilbert (tdc, hil, _buf_olp[c]);
 
-	int a = ang_start;
-	while (a <= ang_end) {
+	int angle = ang_start;
+	while (angle <= ang_end) {
+		int a = (angle + MAXSAMPLE) % MAXSAMPLE;
 		/* calc peak / angle */
-		if (a == 0) {
-			_peak[c][a] = calc_peak (_buf_old[c], _proc[c]->parsiz (), _peak[c][a]);
+		if (angle == 0) {
+			_peak[c][a] = calc_peak (_buf_old[c], parsiz, _peak[c][a]);
 		} else {
 			memcpy (_buf_out[c], hil, parsiz * sizeof (float));
 
@@ -415,8 +416,8 @@ PhaseRotate::thr_process (float const* p_in, int ang_start, int ang_end, int ang
 				_peak[c][a] = calc_rotated_peak (&tdc[firlen], _buf_out[c], parsiz, _peak[c][a], a);
 			}
 		}
-		a += ang_stride;
-		if (a >= ang_end) {
+		angle += ang_stride;
+		if (angle >= ang_end) {
 			break;
 		}
 	}
@@ -454,6 +455,7 @@ PhaseRotate::thr_apply (float const* buf, int c, int a)
 	/* remember overlap */
 	memcpy (_buf_old[c], &tdc[parsiz], parsiz * sizeof (float));
 
+	a = (a + MAXSAMPLE) % MAXSAMPLE;
 	_proc[c]->process (tdc, _buf_out[c], _buf_olp[c], a);
 }
 
