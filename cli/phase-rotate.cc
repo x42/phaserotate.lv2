@@ -3,7 +3,7 @@
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 3 of the License, or
+ * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
  *
  * This program is distributed in the hope that it will be useful,
@@ -32,6 +32,8 @@
 
 #include <fftw3.h>
 #include <sndfile.h>
+
+#include "dsp_peak_calc.h"
 
 #define SUBSAMPLE 2
 #define MAXSAMPLE (180 * SUBSAMPLE)
@@ -66,111 +68,6 @@ private:
 
 SinCosLut scl;
 
-#ifdef HAVE_AVX
-/* https://github.com/Ardour/ardour/blob/master/libs/ardour/sse_functions_avx_linux.cc
- * Copyright (C) 2020 Ayan Shafqat <ayan.x.shafqat@gmail.com>
- */
-
-#include <immintrin.h>
-#include <xmmintrin.h>
-
-static inline __m256
-avx_getmax_ps (__m256 vmax)
-{
-	__m256 tmp;
-	tmp  = _mm256_shuffle_ps (vmax, vmax, _MM_SHUFFLE (2, 3, 0, 1));
-	vmax = _mm256_max_ps (tmp, vmax);
-	tmp  = _mm256_shuffle_ps (vmax, vmax, _MM_SHUFFLE (1, 0, 3, 2));
-	vmax = _mm256_max_ps (tmp, vmax);
-	tmp  = _mm256_permute2f128_ps (vmax, vmax, 1);
-	vmax = _mm256_max_ps (tmp, vmax);
-	return vmax;
-}
-
-static float
-x86_sse_avx_compute_peak (const float* src, uint32_t nframes, float current)
-{
-	const __m256 ABS_MASK = _mm256_set1_ps (-0.0F);
-
-	// Broadcast the current max value to all elements of the YMM register
-	__m256 vcurrent = _mm256_broadcast_ss (&current);
-
-	// Compute single min/max of unaligned portion until alignment is reached
-	while ((((intptr_t)src) % 32 != 0) && nframes > 0) {
-		__m256 vsrc;
-
-		vsrc     = _mm256_setzero_ps ();
-		vsrc     = _mm256_castps128_ps256 (_mm_load_ss (src));
-		vsrc     = _mm256_andnot_ps (ABS_MASK, vsrc);
-		vcurrent = _mm256_max_ps (vcurrent, vsrc);
-
-		++src;
-		--nframes;
-	}
-
-	// Process the aligned portion 16 samples at a time
-	while (nframes >= 16) {
-#ifdef _WIN32
-		_mm_prefetch (((char*)src + (16 * sizeof (float))), _mm_hint (0));
-#else
-		__builtin_prefetch (src + (16 * sizeof (float)), 0, 0);
-#endif
-		__m256 vsrc1, vsrc2;
-		vsrc1 = _mm256_load_ps (src + 0);
-		vsrc2 = _mm256_load_ps (src + 8);
-
-		vsrc1 = _mm256_andnot_ps (ABS_MASK, vsrc1);
-		vsrc2 = _mm256_andnot_ps (ABS_MASK, vsrc2);
-
-		vcurrent = _mm256_max_ps (vcurrent, vsrc1);
-		vcurrent = _mm256_max_ps (vcurrent, vsrc2);
-
-		src += 16;
-		nframes -= 16;
-	}
-
-	// Process the remaining samples 8 at a time
-	while (nframes >= 8) {
-		__m256 vsrc;
-
-		vsrc     = _mm256_load_ps (src);
-		vsrc     = _mm256_andnot_ps (ABS_MASK, vsrc);
-		vcurrent = _mm256_max_ps (vcurrent, vsrc);
-
-		src += 8;
-		nframes -= 8;
-	}
-
-	// If there are still some left 4 to 8 samples, process them below
-	while (nframes > 0) {
-		__m256 vsrc;
-
-		vsrc     = _mm256_setzero_ps ();
-		vsrc     = _mm256_castps128_ps256 (_mm_load_ss (src));
-		vsrc     = _mm256_andnot_ps (ABS_MASK, vsrc);
-		vcurrent = _mm256_max_ps (vcurrent, vsrc);
-
-		++src;
-		--nframes;
-	}
-
-	// Get the current max from YMM register
-	vcurrent = avx_getmax_ps (vcurrent);
-
-	// zero upper 128 bit of 256 bit ymm register to avoid penalties using non-AVX instructions
-	_mm256_zeroupper ();
-
-#if defined(__GNUC__) && (__GNUC__ < 5)
-	return *((float*)&vcurrent);
-#elif defined(__GNUC__) && (__GNUC__ < 8)
-	return vcurrent[0];
-#else
-	return _mm256_cvtss_f32 (vcurrent);
-#endif
-}
-
-#endif
-
 static float
 coeff_to_dB (float coeff)
 {
@@ -183,8 +80,8 @@ coeff_to_dB (float coeff)
 static inline float
 calc_peak (float* buf, uint32_t n_samples, float pk)
 {
-#ifdef HAVE_AVX
-	return x86_sse_avx_compute_peak (buf, n_samples, pk);
+#ifdef _HAVE_DSP_COMPUTE_PEAK
+	return dsp_compute_peak (buf, n_samples, pk);
 #else
 	for (uint32_t i = 0; i < n_samples; ++i) {
 		pk = std::max (pk, fabsf (buf[i]));
@@ -199,7 +96,7 @@ calc_rotated_peak (float const* b0, float const* b1, uint32_t n_samples, float p
 	float sa, ca;
 	scl.sincos (angle, &sa, &ca);
 
-#ifdef HAVE_AVX
+#ifdef _HAVE_DSP_COMPUTE_PEAK
 	float x[n_samples];
 
 #pragma GCC ivdep
