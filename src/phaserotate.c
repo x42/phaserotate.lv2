@@ -48,22 +48,25 @@ typedef struct {
 
 	/* Config */
 	uint32_t fftlen;
-	uint32_t parsiz; // == fftlen / 2
-	uint32_t firlen; // == parsiz / 2
-	float    norm;   // 0.5 / parsiz
+	uint32_t firlen;
+	uint32_t parsiz; // fftlen / 2
+	uint32_t firlat; // firlen / 2
+	uint32_t n_segm; // firlen / fftlen
+	float    interp; // parsiz / 1e6
 
 	/* Latent Buffers */
 	float*   buf_src; // input to be processed by FFT
 	float*   buf_out; // result of inv FFT
 	uint32_t offset;  // r/w offset in latent buffers
-	uint32_t overlap; // input overlap offset (A/B; 0 or parsiz)
+	int32_t  overlap; // input overlap offset
 
 	/* FFT Bufers and Plan */
-	float*         time_data;
-	fftwf_complex* freq_data;
-	fftwf_complex* ffir_data;
-	fftwf_plan     plan_r2c;
-	fftwf_plan     plan_c2r;
+	float*          time_data;
+	fftwf_complex*  freq_data;
+	fftwf_complex*  freq_sum;
+	fftwf_complex** freq_fir;
+	fftwf_plan      plan_r2c;
+	fftwf_plan      plan_c2r;
 
 } FFTiProc;
 
@@ -84,11 +87,19 @@ static void
 cleanup (LV2_Handle instance)
 {
 	FFTiProc* self = (FFTiProc*)instance;
-	free (self->buf_src);
-	free (self->buf_out);
+
 	fftwf_free (self->time_data);
 	fftwf_free (self->freq_data);
-	fftwf_free (self->ffir_data);
+	fftwf_free (self->freq_sum);
+
+	if (self->freq_fir) {
+		for (uint32_t i = 0; i < self->n_segm; ++i) {
+			fftwf_free (self->freq_fir[i]);
+		}
+	}
+	free (self->freq_fir);
+	free (self->buf_src);
+	free (self->buf_out);
 
 	pthread_mutex_lock (&fftw_planner_lock);
 	fftwf_destroy_plan (self->plan_r2c);
@@ -127,26 +138,30 @@ instantiate (const LV2_Descriptor*     descriptor,
 
 	if (rate < 64000) {
 		/* 44.1 and 48 kHz */
-		self->fftlen = 4096;
+		self->fftlen = 512;
+		self->firlen = 3072;
 	} else if (rate < 128000) {
 		/* 88.2 or 96 kHz. */
-		self->fftlen = 8192;
+		self->fftlen = 1024;
+		self->firlen = 4096;
 	} else {
-		self->fftlen = 16384;
+		self->fftlen = 2048;
+		self->firlen = 8192;
 	}
 
 	self->angle     = 0;
 	self->overlap   = 0;
 	self->parsiz    = self->fftlen / 2;
-	self->firlen    = self->parsiz / 2;
-	self->norm      = 0.5 / self->parsiz;
-	self->buf_src   = (float*)calloc (self->fftlen, sizeof (float));
+	self->firlat    = self->firlen / 2;
+	self->n_segm    = self->firlen / self->parsiz;
+	self->interp    = self->parsiz * 1e-6f;
+	self->buf_src   = (float*)calloc (self->firlen, sizeof (float));
 	self->buf_out   = (float*)calloc (self->parsiz, sizeof (float));
 	self->time_data = (float*)fftwf_malloc (self->fftlen * sizeof (float));
 	self->freq_data = (fftwf_complex*)fftwf_malloc ((self->parsiz + 1) * sizeof (fftwf_complex));
-	self->ffir_data = (fftwf_complex*)fftwf_malloc ((self->parsiz + 1) * sizeof (fftwf_complex));
+	self->freq_sum  = (fftwf_complex*)fftwf_malloc ((self->parsiz + 1) * sizeof (fftwf_complex));
 
-	if (!self->buf_src || !self->buf_out || !self->ffir_data || !self->time_data || !self->freq_data) {
+	if (!self->buf_src || !self->buf_out || !self->time_data || !self->freq_data || !self->freq_sum) {
 		pthread_mutex_lock (&fftw_planner_lock);
 		++instance_count;
 		pthread_mutex_unlock (&fftw_planner_lock);
@@ -154,43 +169,92 @@ instantiate (const LV2_Descriptor*     descriptor,
 		return NULL;
 	}
 
-	float         fir[self->fftlen];
-	fftwf_complex freq_fir[self->firlen + 1];
+	self->freq_fir = (fftwf_complex**)calloc (self->n_segm, sizeof (fftwf_complex*));
+
+	if (!self->freq_fir) {
+		pthread_mutex_lock (&fftw_planner_lock);
+		++instance_count;
+		pthread_mutex_unlock (&fftw_planner_lock);
+		cleanup ((LV2_Handle)self);
+		return NULL;
+	}
+	for (uint32_t i = 0; i < self->n_segm; ++i) {
+		self->freq_fir[i] = (fftwf_complex*)fftwf_malloc ((self->parsiz + 1) * sizeof (fftwf_complex));
+	}
+	for (uint32_t i = 0; i < self->n_segm; ++i) {
+		if (!self->freq_fir[i]) {
+			pthread_mutex_lock (&fftw_planner_lock);
+			++instance_count;
+			pthread_mutex_unlock (&fftw_planner_lock);
+			cleanup ((LV2_Handle)self);
+			return NULL;
+		}
+	}
+
+	float*         fir          = (float*)fftwf_malloc (self->firlen * sizeof (float));
+	fftwf_complex* freq_hilbert = (fftwf_complex*)fftwf_malloc ((self->firlat + 1) * sizeof (fftwf_complex));
+
+	if (!fir || !freq_hilbert) {
+		fftwf_free (fir);
+		fftwf_free (freq_hilbert);
+		pthread_mutex_lock (&fftw_planner_lock);
+		++instance_count;
+		pthread_mutex_unlock (&fftw_planner_lock);
+		cleanup ((LV2_Handle)self);
+		return NULL;
+	}
 
 	pthread_mutex_lock (&fftw_planner_lock);
 	++instance_count;
 	self->plan_r2c = fftwf_plan_dft_r2c_1d (self->fftlen, self->time_data, self->freq_data, FFTW_ESTIMATE);
 	self->plan_c2r = fftwf_plan_dft_c2r_1d (self->fftlen, self->freq_data, self->time_data, FFTW_ESTIMATE);
 
-	fftwf_plan plan_fir_c2r = fftwf_plan_dft_c2r_1d (self->parsiz, freq_fir, fir, FFTW_ESTIMATE);
+	fftwf_plan plan_fir_c2r = fftwf_plan_dft_c2r_1d (self->firlen, freq_hilbert, fir, FFTW_ESTIMATE);
 	pthread_mutex_unlock (&fftw_planner_lock);
 
 	if (!self->plan_r2c || !self->plan_c2r || !plan_fir_c2r) {
+		fftwf_free (fir);
+		fftwf_free (freq_hilbert);
 		cleanup ((LV2_Handle)self);
 		return NULL;
 	}
 
 	/* generate hilbert FIR */
-	for (uint32_t i = 0; i <= self->firlen; ++i) {
-		const float re = i & 1 ? -1 : 1;
-		freq_fir[i][0] = 0;
-		freq_fir[i][1] = re;
+	for (uint32_t i = 0; i <= self->firlat; ++i) {
+		const float re     = i & 1 ? -1 : 1;
+		freq_hilbert[i][0] = 0;
+		freq_hilbert[i][1] = re;
 	}
-
-	fftwf_execute_dft_c2r (plan_fir_c2r, freq_fir, fir);
+	fftwf_execute_dft_c2r (plan_fir_c2r, freq_hilbert, fir);
 
 	pthread_mutex_lock (&fftw_planner_lock);
 	fftwf_destroy_plan (plan_fir_c2r);
 	pthread_mutex_unlock (&fftw_planner_lock);
 
-	const double norm = 0.5 / self->parsiz;
-	const double flen = 1.0 / self->parsiz;
-	for (uint32_t i = 0; i < self->parsiz; ++i) {
-		fir[i] *= norm * (1 - cos (2.0 * M_PI * i * flen));
+	/* normalize and segment FIR */
+	const double fnorm = 0.5 / self->firlen;
+	const double flen_ = 1.0 / self->firlen;
+	for (uint32_t i = 0; i < self->firlen; ++i) {
+		fir[i] *= fnorm * (1 - cos (2.0 * M_PI * i * flen_));
 	}
 
-	memset (fir + self->parsiz, 0, self->parsiz * sizeof (float));
-	fftwf_execute_dft_r2c (self->plan_r2c, fir, self->ffir_data);
+#if 0
+	memset (fir, 0, self->firlen * sizeof (float));
+	fir[self->firlat] = 1.0;
+#endif
+
+	const float norm = 0.5 / self->parsiz;
+	memset (&self->time_data[self->parsiz], 0, sizeof (float) * self->parsiz);
+
+	for (uint32_t s = 0; s < self->n_segm; ++s) {
+		for (int i = 0; i < self->parsiz; ++i) {
+			self->time_data[i] = norm * fir[s * self->parsiz + i];
+		}
+		fftwf_execute_dft_r2c (self->plan_r2c, self->time_data, self->freq_fir[s]);
+	}
+
+	fftwf_free (freq_hilbert);
+	fftwf_free (fir);
 
 	return (LV2_Handle)self;
 }
@@ -224,7 +288,7 @@ static void
 activate (LV2_Handle instance)
 {
 	FFTiProc* self = (FFTiProc*)instance;
-	memset (self->buf_src, 0, self->fftlen * sizeof (float));
+	memset (self->buf_src, 0, self->firlen * sizeof (float));
 	memset (self->buf_out, 0, self->parsiz * sizeof (float));
 	memset (self->time_data, 0, self->fftlen * sizeof (float));
 	self->overlap = 0;
@@ -255,15 +319,21 @@ run (LV2_Handle instance, uint32_t n_samples)
 	float* iobuf = self->p_out;
 
 	/* localize constants */
-	const uint32_t       parsiz   = self->parsiz;
-	const uint32_t       firlen   = self->firlen;
-	const fftwf_complex* freq_fir = self->ffir_data;
-	const float          norm     = self->norm;
+	const uint32_t parsiz = self->parsiz;
+	const uint32_t firlen = self->firlen;
+	const uint32_t firlat = self->firlat;
+	const uint32_t n_segm = self->n_segm;
+
+	/* localize FFT buffer pointers */
+	float*                      time_data = self->time_data;
+	fftwf_complex*              freq_data = self->freq_data;
+	fftwf_complex*              freq_sum  = self->freq_sum;
+	fftwf_complex* const* const freq_fir  = self->freq_fir;
 
 	/* localize state */
 	uint32_t remain  = n_samples;
 	uint32_t offset  = self->offset;
-	uint32_t overlap = self->overlap;
+	int32_t  overlap = self->overlap;
 
 	while (remain > 0) {
 		uint32_t ns = parsiz - offset;
@@ -279,47 +349,50 @@ run (LV2_Handle instance, uint32_t n_samples)
 		offset += ns;
 		remain -= ns;
 
-		/* TODO consider background processing to spread out load when using small block sizes */
 		if (offset == parsiz) {
 			offset = 0;
 
 			/* copy end/overlap of prev. iFFT */
-			memcpy (self->buf_out, self->time_data + parsiz, sizeof (float) * parsiz);
+			memcpy (self->buf_out, &time_data[parsiz], sizeof (float) * parsiz);
 
-			/* fill fft buffer & zero pad */
-			memcpy (self->time_data, self->buf_src + overlap, sizeof (float) * parsiz);
-			memset (self->time_data + parsiz, 0, sizeof (float) * parsiz);
+			/* clear convolution buffers */
+			memset (&time_data[parsiz], 0, sizeof (float) * parsiz);
+			memset (freq_sum, 0, sizeof (fftwf_complex) * (parsiz + 1));
 
-			fftwf_execute_dft_r2c (self->plan_r2c, self->time_data, self->freq_data);
+			int32_t olp = overlap;
+			for (uint32_t s = 0; s < n_segm; ++s) {
+				memcpy (time_data, &self->buf_src[olp], sizeof (float) * parsiz);
+				olp -= parsiz;
+				if (olp < 0) {
+					olp += firlen;
+				}
 
-			/* FIR convolution, 90deg phase shift */
+				fftwf_complex* ffir = freq_fir[s];
+				fftwf_execute_dft_r2c (self->plan_r2c, time_data, freq_data);
+				/* FIR convolution, 90deg phase shift */
 #pragma GCC ivdep /* do not check for aliasing, buffers do not overlap */
-			for (uint32_t i = 0; i <= parsiz; ++i) {
-				const float re        = self->freq_data[i][0];
-				self->freq_data[i][0] = norm * (re * freq_fir[i][0] - self->freq_data[i][1] * freq_fir[i][1]);
-				self->freq_data[i][1] = norm * (re * freq_fir[i][1] + self->freq_data[i][1] * freq_fir[i][0]);
+				for (uint32_t i = 0; i <= parsiz; ++i) {
+					freq_sum[i][0] += freq_data[i][0] * ffir[i][0] - freq_data[i][1] * ffir[i][1];
+					freq_sum[i][1] += freq_data[i][0] * ffir[i][1] + freq_data[i][1] * ffir[i][0];
+				}
 			}
 
-			fftwf_execute_dft_c2r (self->plan_c2r, self->freq_data, self->time_data);
+			fftwf_execute_dft_c2r (self->plan_c2r, freq_sum, time_data);
 
 #pragma GCC ivdep
 			for (uint32_t i = 0; i < parsiz; ++i) {
-				self->buf_out[i] += self->time_data[i];
+				self->buf_out[i] += time_data[i];
 			}
 
-			/* delayed input (FIRlen / 2) */
-			float* inA;
-			float* inB;
-			if (overlap == 0) {
-				inA = &self->buf_src[parsiz + firlen];
-				inB = self->buf_src;
-			} else {
-				inA = &self->buf_src[firlen];
-				inB = &self->buf_src[parsiz];
+			/* delayed input (firlen / 2) */
+			int32_t off = overlap - firlat;
+			if (off < 0) {
+				off += firlen;
 			}
 
-			float  ca, sa;
+			float* in  = &self->buf_src[off];
 			float* out = self->buf_out;
+
 			if (target_angle != angle) {
 				/* interpolate */
 				float da = (target_angle - angle);
@@ -331,29 +404,39 @@ run (LV2_Handle instance, uint32_t n_samples)
 						da -= 1.f;
 					}
 				}
-				da /= (float)firlen;
 
-				for (uint32_t i = 0; i < firlen; ++i, ++out) {
-					sin_cos (angle + da * i, &sa, &ca);
-					*out = ca * inA[i] + sa * *out;
+				da /= (float)parsiz;
+
+				int         final  = 0;
+				const float interp = self->interp;
+				if (da > interp) {
+					da = interp;
+				} else if (da < -interp) {
+					da = -interp;
+				} else {
+					final = 1;
 				}
 
-				angle = target_angle;
-				sin_cos (angle, &sa, &ca);
+				for (uint32_t i = 0; i < parsiz; ++i) {
+					float ca, sa;
+					sin_cos (angle, &sa, &ca);
+					out[i] = ca * in[i] + sa * out[i];
+					angle += da;
+				}
+
+				if (final) {
+					angle = target_angle;
+				}
 			} else {
+				float ca, sa;
 				sin_cos (angle, &sa, &ca);
 #pragma GCC ivdep
-				for (uint32_t i = 0; i < firlen; ++i, ++out) {
-					*out = ca * inA[i] + sa * *out;
+				for (uint32_t i = 0; i < parsiz; ++i) {
+					out[i] = ca * in[i] + sa * out[i];
 				}
 			}
 
-#pragma GCC ivdep
-			for (uint32_t i = 0; i < firlen; ++i, ++out) {
-				*out = ca * inB[i] + sa * *out;
-			}
-
-			overlap = (overlap == 0) ? parsiz : 0;
+			overlap = (overlap + parsiz) % firlen;
 		}
 	}
 
@@ -363,7 +446,7 @@ run (LV2_Handle instance, uint32_t n_samples)
 	self->angle   = angle;
 
 	/* announce latency */
-	*self->p_latency = parsiz + firlen;
+	*self->p_latency = parsiz + firlat;
 }
 
 static const void*
