@@ -6,7 +6,7 @@ PKG_CONFIG ?= pkg-config
 OPTIMIZATIONS ?= -ffast-math -fomit-frame-pointer -O3 -fno-finite-math-only -DNDEBUG # -fopt-info-vec-missed -fopt-info -fopt-info-loop-vec-all
 CXXFLAGS ?= $(OPTIMIZATIONS) -Wall -g
 
-VERSION?=$(shell (git describe --tags HEAD 2>/dev/null || echo "v0.4") | sed 's/^v//')
+VERSION?=$(shell (git describe --tags HEAD 2>/dev/null || echo "v0.5") | sed 's/^v//')
 
 ###############################################################################
 
