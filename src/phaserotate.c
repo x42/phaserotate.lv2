@@ -52,7 +52,9 @@ typedef struct {
 	uint32_t parsiz; // fftlen / 2
 	uint32_t firlat; // firlen / 2
 	uint32_t n_segm; // firlen / fftlen
-	float    interp; // parsiz / 1e6
+
+	float interp_th; // parsiz / 1e6
+	float interp_nm; // 1 / parsiz
 
 	/* Latent Buffers */
 	float*   buf_src; // input to be processed by FFT
@@ -154,7 +156,9 @@ instantiate (const LV2_Descriptor*     descriptor,
 	self->parsiz    = self->fftlen / 2;
 	self->firlat    = self->firlen / 2;
 	self->n_segm    = self->firlen / self->parsiz;
-	self->interp    = self->parsiz * 1e-6f;
+	self->interp_th = self->parsiz * 1e-6f;
+	self->interp_nm = 1.f / self->parsiz;
+
 	self->buf_src   = (float*)calloc (self->firlen, sizeof (float));
 	self->buf_out   = (float*)calloc (self->parsiz, sizeof (float));
 	self->time_data = (float*)fftwf_malloc (self->fftlen * sizeof (float));
@@ -221,9 +225,9 @@ instantiate (const LV2_Descriptor*     descriptor,
 
 	/* generate hilbert FIR */
 	for (uint32_t i = 0; i <= self->firlat; ++i) {
-		const float re     = i & 1 ? -1 : 1;
+		const float im     = i & 1 ? -1.f : 1.f;
 		freq_hilbert[i][0] = 0;
-		freq_hilbert[i][1] = re;
+		freq_hilbert[i][1] = im;
 	}
 	fftwf_execute_dft_c2r (plan_fir_c2r, freq_hilbert, fir);
 
@@ -237,11 +241,6 @@ instantiate (const LV2_Descriptor*     descriptor,
 	for (uint32_t i = 0; i < self->firlen; ++i) {
 		fir[i] *= fnorm * (1 - cos (2.0 * M_PI * i * flen_));
 	}
-
-#if 0
-	memset (fir, 0, self->firlen * sizeof (float));
-	fir[self->firlat] = 1.0;
-#endif
 
 	const float norm = 0.5 / self->parsiz;
 	memset (&self->time_data[self->parsiz], 0, sizeof (float) * self->parsiz);
@@ -405,14 +404,14 @@ run (LV2_Handle instance, uint32_t n_samples)
 					}
 				}
 
-				da /= (float)parsiz;
+				da *= self->interp_nm;
 
 				int         final  = 0;
-				const float interp = self->interp;
-				if (da > interp) {
-					da = interp;
-				} else if (da < -interp) {
-					da = -interp;
+				const float thresh = self->interp_th;
+				if (da > thresh) {
+					da = thresh;
+				} else if (da < -thresh) {
+					da = -thresh;
 				} else {
 					final = 1;
 				}
