@@ -44,7 +44,9 @@ typedef struct {
 	float* p_latency;
 
 	/* Parameter */
-	double angle;
+	float angle;
+	float sa; // sin (angle)
+	float ca; // cos (angle)
 
 	/* Config */
 	uint32_t fftlen;
@@ -255,6 +257,8 @@ instantiate (const LV2_Descriptor*     descriptor,
 	fftwf_free (freq_hilbert);
 	fftwf_free (fir);
 
+	sin_cos (self->angle, &self->sa, &self->ca);
+
 	return (LV2_Handle)self;
 }
 
@@ -299,14 +303,14 @@ run (LV2_Handle instance, uint32_t n_samples)
 {
 	FFTiProc* self = (FFTiProc*)instance;
 
-	double angle        = self->angle;
-	double target_angle = *self->p_angle / -360.0;
+	float angle        = self->angle;
+	float target_angle = *self->p_angle / -360.f;
 
-	if (target_angle < -.5) {
-		target_angle = -.5;
+	if (target_angle < -.5f) {
+		target_angle = -.5f;
 	}
-	if (target_angle > 0.5) {
-		target_angle = 0.5;
+	if (target_angle > 0.5f) {
+		target_angle = 0.5f;
 	}
 
 	/* copy/forward no-inplace buffers */
@@ -426,9 +430,12 @@ run (LV2_Handle instance, uint32_t n_samples)
 				if (final) {
 					angle = target_angle;
 				}
+				if (angle == target_angle) {
+					sin_cos (angle, &self->sa, &self->ca);
+				}
 			} else {
-				float ca, sa;
-				sin_cos (angle, &sa, &ca);
+				const float sa = self->sa;
+				const float ca = self->ca;
 #pragma GCC ivdep
 				for (uint32_t i = 0; i < parsiz; ++i) {
 					out[i] = ca * in[i] + sa * out[i];
