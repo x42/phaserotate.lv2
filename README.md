@@ -63,7 +63,7 @@ Install
 Compiling phaserotate.lv2 requires the LV2 SDK, fftw, gnu-make, and a c-compiler.
 
 ```bash
-git clone git://github.com/x42/phaserotate.lv2.git
+git clone https://github.com/x42/phaserotate.lv2.git
 cd phaserotate.lv2
 make
 
