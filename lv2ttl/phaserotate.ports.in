@@ -1,0 +1,41 @@
+<http://gareus.org/oss/lv2/@LV2NAME@@URISUFFIX@>
+	a lv2:Plugin, doap:Project, lv2:UtilityPlugin;
+	doap:license <http://usefulinc.com/doap/licenses/gpl>;
+	doap:maintainer <http://gareus.org/rgareus#me>;
+	doap:name "Phaserotate@NAMESUFFIX@";
+	@VERSION@
+	lv2:optionalFeature lv2:hardRTCapable;
+	lv2:requiredFeature urid:map;
+	rdfs:comment "Phase rotate signal.";
+
+	@UITTL@
+	@SIGNATURE@
+
+	lv2:port [
+		a atom:AtomPort ,
+			lv2:InputPort ;
+		atom:bufferType atom:Sequence ;
+		lv2:designation lv2:control ;
+		lv2:index 0 ;
+		lv2:symbol "control" ;
+		lv2:name "control" ;
+		rdfs:comment "UI to plugin communication"
+	] , [
+		a atom:AtomPort ,
+			lv2:OutputPort ;
+		atom:bufferType atom:Sequence ;
+		lv2:designation lv2:control ;
+		lv2:index 1 ;
+		lv2:symbol "notify" ;
+		lv2:name "Notify" ;
+		rsz:minimumSize 4096;
+		rdfs:comment "Plugin to GUI communication"
+	] , [
+		a lv2:ControlPort, lv2:OutputPort;
+		lv2:index 2;
+		lv2:symbol "latency";
+		lv2:name "Signal Latency";
+		lv2:minimum 0;
+		lv2:maximum 8192;
+		lv2:portProperty lv2:reportsLatency, lv2:integer;
+		units:unit units:frame;

@@ -1,0 +1,33 @@
+	] , [
+		a lv2:InputPort, lv2:ControlPort ;
+		lv2:index 3 ;
+		lv2:symbol "angle" ;
+		lv2:name "Angle" ;
+		lv2:default 0.0 ;
+		lv2:minimum -180.0 ;
+		lv2:maximum 180.0 ;
+		lv2:scalePoint [ rdfs:label  "-180°"; rdf:value -180.0 ; ] ;
+		lv2:scalePoint [ rdfs:label  "-135°"; rdf:value -135.0 ; ] ;
+		lv2:scalePoint [ rdfs:label  "-90°";  rdf:value -90.0 ; ] ;
+		lv2:scalePoint [ rdfs:label  "-45°";  rdf:value -45.0 ; ] ;
+		lv2:scalePoint [ rdfs:label  "0°";   rdf:value 0.0 ; ] ;
+		lv2:scalePoint [ rdfs:label  "45°";  rdf:value 45.0 ; ] ;
+		lv2:scalePoint [ rdfs:label  "90°";  rdf:value 90.0 ; ] ;
+		lv2:scalePoint [ rdfs:label  "135°"; rdf:value 135.0 ; ] ;
+		lv2:scalePoint [ rdfs:label  "180°"; rdf:value 180.0 ; ] ;
+		units:unit units:degree;
+		pprop:rangeSteps 721;
+	] , [
+		a lv2:AudioPort ,
+			lv2:InputPort ;
+		lv2:index 4 ;
+		lv2:symbol "in" ;
+		lv2:name "In"
+	] , [
+		a lv2:AudioPort ,
+			lv2:OutputPort ;
+		lv2:index 5 ;
+		lv2:symbol "out" ;
+		lv2:name "Out"
+	]
+	.
