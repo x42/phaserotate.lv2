@@ -2,15 +2,31 @@
 PREFIX ?= /usr/local
 LV2DIR ?= $(PREFIX)/lib/lv2
 
-OPTIMIZATIONS ?= -msse -msse2 -mfpmath=sse -ffast-math -fomit-frame-pointer -O3 -fno-finite-math-only -DNDEBUG # -fopt-info-vec-missed -fopt-info -fopt-info-loop-vec-all
-CFLAGS ?= $(OPTIMIZATIONS) -Wall
 PKG_CONFIG ?= pkg-config
 STRIP ?= strip
 
 phaserotate_VERSION?=$(shell git describe --tags HEAD 2>/dev/null | sed 's/-g.*$$//;s/^v//' || echo "LV2")
 
+MACHINE=$(shell uname -m)
+ifneq (,$(findstring x64,$(MACHINE)))
+  HAVE_SSE=yes
+endif
+ifneq (,$(findstring 86,$(MACHINE)))
+  HAVE_SSE=yes
+endif
+
+ifeq ($(HAVE_SSE),yes)
+  OPTIMIZATIONS ?= -msse -msse2 -mfpmath=sse --fast-math -fomit-frame-pointer -O3 -fno-finite-math-only -DNDEBUG
+else
+  OPTIMIZATIONS ?= -fomit-frame-pointer -O3 -fno-finite-math-only -DNDEBUG
+endif
+
 ###############################################################################
-BUILDDIR=build/
+CFLAGS ?= $(OPTIMIZATIONS) -Wall -g -Wno-unused-function
+
+BUILDDIR = build/
+APPBLD   = x42/
+###############################################################################
 
 LV2NAME=phaserotate
 BUNDLE=phaserotate.lv2
