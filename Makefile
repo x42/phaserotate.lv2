@@ -1,6 +1,8 @@
 #!/usr/bin/make -f
 PREFIX ?= /usr/local
 LV2DIR ?= $(PREFIX)/lib/lv2
+BINDIR ?= $(PREFIX)/bin
+MANDIR ?= $(PREFIX)/share/man/man1
 
 PKG_CONFIG ?= pkg-config
 STRIP ?= strip
