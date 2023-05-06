@@ -885,6 +885,7 @@ meter_mousedown (RobWidget* handle, RobTkBtnEvent* event)
 }
 
 /* ****************************************************************************/
+static void cb_scale_changed (RobWidget* w, void* handle);
 
 static RobWidget*
 toplevel (phrotUI* ui, void* const top)
@@ -892,7 +893,7 @@ toplevel (phrotUI* ui, void* const top)
 	/* main widget: layout */
 	ui->rw = rob_vbox_new (FALSE, 2);
 	robwidget_make_toplevel (ui->rw, top);
-	robwidget_toplevel_enable_scaling (ui->rw);
+	robwidget_toplevel_enable_scaling (ui->rw, cb_scale_changed, ui);
 
 	ui->font[0] = pango_font_description_from_string ("Mono 9px");
 
@@ -1118,6 +1119,13 @@ ui_disable (LV2UI_Handle handle)
 	LV2_Atom* msg = (LV2_Atom*)x_forge_object (&ui->forge, &frame, 1, ui->uris.ui_off);
 	lv2_atom_forge_pop (&ui->forge, &frame);
 	ui->write (ui->controller, PROT_ATOM_CONTROL, lv2_atom_total_size (msg), ui->uris.atom_eventTransfer, msg);
+}
+
+static void cb_scale_changed (RobWidget* w, void* handle) {
+	phrotUI* ui = (phrotUI*)handle;
+	if (!ui->disable_signals) {
+		tx_state (ui);
+	}
 }
 
 static LV2UI_Handle
