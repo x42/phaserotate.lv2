@@ -28,9 +28,15 @@
 
 #include <fftw3.h>
 
-#include "lv2/lv2plug.in/ns/ext/options/options.h"
+#ifdef HAVE_LV2_1_18_6
+#include <lv2/core/lv2.h>
+#include <lv2/log/logger.h>
+#include <lv2/options/options.h>
+#else
+#include <lv2/lv2plug.in/ns/ext/options/options.h>
 #include <lv2/lv2plug.in/ns/ext/log/logger.h>
 #include <lv2/lv2plug.in/ns/lv2core/lv2.h>
+#endif
 
 #include "phaserotate.h"
 
