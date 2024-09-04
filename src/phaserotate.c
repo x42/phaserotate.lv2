@@ -576,9 +576,9 @@ process_channel (FFTiProc* self, uint32_t chn, uint32_t n_samples)
 	if (n_samples < latency) {
 		lvl_in = meter_run (self, c, c->buf_dly, n_samples, 0);
 #if 0
-		memmove (c->buf_dly, &c->buf_dly[n_samples], n_samples * sizeof (float));
+		memmove (c->buf_dly, &c->buf_dly[n_samples], (latency - n_samples) * sizeof (float));
 #else
-		memcpy (c->buf_dly, &c->buf_dly[n_samples], n_samples * sizeof (float));
+		memcpy (c->buf_dly, &c->buf_dly[n_samples], (latency - n_samples) * sizeof (float));
 #endif
 		memcpy (&c->buf_dly[latency - n_samples], iobuf, n_samples * sizeof (float));
 	} else {
