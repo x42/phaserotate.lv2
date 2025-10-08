@@ -575,12 +575,20 @@ process_channel (FFTiProc* self, uint32_t chn, uint32_t n_samples)
 	float lvl_in = 0;
 	if (n_samples < latency) {
 		lvl_in = meter_run (self, c, c->buf_dly, n_samples, 0);
-#if 0
-		memmove (c->buf_dly, &c->buf_dly[n_samples], (latency - n_samples) * sizeof (float));
+		const uint32_t overlap = latency - n_samples;
+#if 0 // IFF memmove doesn't allocate memory
+		memmove (c->buf_dly, &c->buf_dly[n_samples], overlap * sizeof (float));
 #else
-		memcpy (c->buf_dly, &c->buf_dly[n_samples], (latency - n_samples) * sizeof (float));
+		if (overlap <= n_samples) {
+			memcpy (c->buf_dly, &c->buf_dly[n_samples], overlap * sizeof (float));
+		} else {
+			memcpy (c->buf_dly, &c->buf_dly[n_samples], n_samples * sizeof (float));
+			for (uint32_t i = 0; i < overlap - n_samples; ++i) {
+				c->buf_dly[n_samples] = c->buf_dly[n_samples + i];
+			}
+		}
 #endif
-		memcpy (&c->buf_dly[latency - n_samples], iobuf, n_samples * sizeof (float));
+		memcpy (&c->buf_dly[overlap], iobuf, n_samples * sizeof (float));
 	} else {
 		float meter_peak = 0;
 		for (uint32_t i = 0; i < latency; ++i) {
